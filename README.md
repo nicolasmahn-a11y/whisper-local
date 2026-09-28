@@ -7,8 +7,8 @@ another one on your network, not in someone else's cloud.
 On Linux it is a GNOME app, a top-bar extension and a small pill at the bottom
 of the screen that shows the sound level while you speak. On macOS it is a
 native menu bar app with the same pill; see [macos/README.md](macos/README.md).
-The macOS app is experimental: it has not yet been built on a Mac, only its
-core logic is tested (on Linux).
+The macOS app is experimental: it has been built and run on macOS, though not
+as widely tested as the Linux app.
 
 ## The speech server
 

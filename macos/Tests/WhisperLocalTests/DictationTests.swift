@@ -1,3 +1,4 @@
+#if canImport(XCTest)
 import XCTest
 @testable import WhisperLocal
 
@@ -338,3 +339,4 @@ final class DictationTests: XCTestCase {
         XCTAssertEqual(dictation.state, .idle)
     }
 }
+#endif

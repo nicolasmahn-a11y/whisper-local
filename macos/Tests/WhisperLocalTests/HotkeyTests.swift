@@ -1,3 +1,4 @@
+#if canImport(XCTest)
 import CoreGraphics
 import XCTest
 @testable import WhisperLocal
@@ -64,3 +65,4 @@ final class HotkeyTests: XCTestCase {
         XCTAssertEqual(hotkey.receive(kind: .keyDown, code: 105, flags: 0), .handsFreePressed)
     }
 }
+#endif

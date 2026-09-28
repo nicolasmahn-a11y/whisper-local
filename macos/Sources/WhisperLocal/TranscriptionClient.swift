@@ -52,12 +52,18 @@ private final class SameOriginRedirectDelegate: NSObject, URLSessionTaskDelegate
 struct TranscriptionClient {
     var session: URLSession = .shared
 
+    /// The server sends nothing until it has transcribed everything, so the
+    /// idle timeout must grow with the recording.
+    static func timeout(forWAV wav: Data) -> TimeInterval {
+        60 + 2 * WAV.duration(of: wav)
+    }
+
     func transcribe(wav: Data, serverURL: String, apiKey: String, language: String, knownWords: [String]) async throws -> String {
         let url = try endpoint(serverURL)
         let boundary = "WhisperLocal-\(UUID().uuidString)"
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        request.timeoutInterval = 30
+        request.timeoutInterval = Self.timeout(forWAV: wav)
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
         if !apiKey.isEmpty {
             request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
@@ -84,7 +90,7 @@ struct TranscriptionClient {
         guard let result = try? JSONDecoder().decode(Transcript.self, from: data) else {
             throw SpeechError.invalidJSON
         }
-        return result.text
+        return result.text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     func reachable(serverURL: String) async -> Bool {

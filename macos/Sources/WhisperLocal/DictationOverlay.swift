@@ -2,12 +2,18 @@ import AppKit
 import Foundation
 import SwiftUI
 
+enum OverlayMessage: Equatable {
+    case error(String)
+    case notice(String)
+}
+
 @MainActor
 private final class OverlayDisplay: ObservableObject {
     @Published var state: DictationState = .idle
     @Published var level = 0.0
     @Published var keyName = "Right Option"
-    @Published var problem: String?
+    @Published var message: OverlayMessage?
+    @Published var transcribingSince = Date()
 }
 
 @MainActor
@@ -18,7 +24,7 @@ final class DictationOverlay {
     private var visibilityChange = 0
 
     init() {
-        let size = NSSize(width: 440, height: 72)
+        let size = NSSize(width: 600, height: 72)
         panel = NSPanel(
             contentRect: NSRect(origin: .zero, size: size),
             styleMask: [.borderless, .nonactivatingPanel],
@@ -35,14 +41,19 @@ final class DictationOverlay {
         panel.contentView = NSHostingView(rootView: OverlayView(display: display).frame(width: size.width, height: size.height))
     }
 
-    func update(state: DictationState, level: Double, keyName: String, problem: String?) {
-        if display.state != state { display.state = state }
+    func update(state: DictationState, level: Double, keyName: String, message: OverlayMessage?) {
+        let stateChanged = display.state != state
+        if stateChanged {
+            if state == .transcribing { display.transcribingSince = Date() }
+            display.state = state
+        }
         display.level = state == .listening || state == .handsFree
             ? display.level * 0.65 + level * 0.35 : 0
         if display.keyName != keyName { display.keyName = keyName }
-        if display.problem != problem { display.problem = problem }
+        if display.message != message { display.message = message }
 
-        let shouldShow = state != .idle || problem != nil
+        let shouldShow = state != .idle || message != nil
+        if shouldShow && visible && stateChanged { position() }
         guard shouldShow != visible else { return }
         visible = shouldShow
         visibilityChange += 1
@@ -69,7 +80,9 @@ final class DictationOverlay {
     }
 
     private func position() {
-        guard let screen = NSScreen.screens.first ?? NSScreen.main else { return }
+        let mouse = NSEvent.mouseLocation
+        guard let screen = NSScreen.screens.first(where: { NSMouseInRect(mouse, $0.frame, false) })
+            ?? NSScreen.main ?? NSScreen.screens.first else { return }
         let frame = screen.visibleFrame
         panel.setFrameOrigin(NSPoint(
             x: frame.midX - panel.frame.width / 2,
@@ -83,14 +96,16 @@ private struct OverlayView: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            if let problem = display.problem {
+            if case .error(let text) = display.message {
                 Image(systemName: "exclamationmark.circle.fill")
                     .foregroundStyle(DictationStyle.current(
                         state: display.state, enabled: true, hasProblem: true
                     ).color)
-                Text(problem)
-                    .foregroundStyle(Theme.neutralStrong)
-                    .lineLimit(1)
+                MessageText(text: text)
+            } else if case .notice(let text) = display.message, display.state == .idle {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(Theme.green)
+                MessageText(text: text)
             } else {
                 switch display.state {
                 case .listening, .handsFree:
@@ -102,11 +117,18 @@ private struct OverlayView: View {
                             .font(.system(size: 12))
                             .foregroundStyle(Theme.neutralStrong)
                             .lineLimit(1)
+                    } else {
+                        StatusText(text: "Listening")
                     }
                 case .transcribing:
                     BusyDots(color: DictationStyle.current(
                         state: .transcribing, enabled: true, hasProblem: false
                     ).color)
+                    TimelineView(.periodic(from: display.transcribingSince, by: 1)) { context in
+                        StatusText(text: "Transcribing… " + RecordingFormat.elapsed(
+                            context.date.timeIntervalSince(display.transcribingSince)
+                        ))
+                    }
                 case .idle:
                     EmptyView()
                 }
@@ -116,6 +138,29 @@ private struct OverlayView: View {
         .padding(.vertical, 12)
         .background(.ultraThinMaterial, in: Capsule())
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+private struct StatusText: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(.system(size: 13, weight: .medium))
+            .monospacedDigit()
+            .foregroundStyle(Theme.neutralStrong)
+            .lineLimit(1)
+    }
+}
+
+private struct MessageText: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .foregroundStyle(Theme.neutralStrong)
+            .lineLimit(1)
+            .minimumScaleFactor(0.85)
     }
 }
 

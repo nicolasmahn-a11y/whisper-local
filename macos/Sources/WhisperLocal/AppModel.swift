@@ -39,6 +39,7 @@ enum AppIssue: LocalizedError {
     case eventTap
     case apiKey
     case launchAtLogin
+    case recordingMissing
 
     var errorDescription: String? {
         switch self {
@@ -50,6 +51,7 @@ enum AppIssue: LocalizedError {
         case .eventTap: "Could not monitor keyboard"
         case .apiKey: "Could not save API key"
         case .launchAtLogin: "Could not change launch at login"
+        case .recordingMissing: "Recording no longer available"
         }
     }
 
@@ -58,9 +60,14 @@ enum AppIssue: LocalizedError {
         case .inputMonitoring, .eventTap: .inputMonitoring
         case .accessibility: .accessibility
         case .microphone: .microphone
-        case .clipboard, .keyboardEvent, .apiKey, .launchAtLogin: nil
+        case .clipboard, .keyboardEvent, .apiKey, .launchAtLogin, .recordingMissing: nil
         }
     }
+}
+
+/// A transcription failed but its audio is in the recording cache.
+struct RecordingSaved: Error {
+    let underlying: Error
 }
 
 @MainActor
@@ -75,6 +82,7 @@ final class AppModel: ObservableObject {
         }
     }
     @Published private(set) var recentTranscripts: [String] = []
+    @Published private(set) var unsentRecordings: [CachedRecording] = []
     @Published private(set) var problem: Problem? = nil
     @Published private(set) var serverReachable: Bool? = nil
     @Published private(set) var launchAtLogin: Bool
@@ -120,14 +128,22 @@ final class AppModel: ObservableObject {
         Task { @MainActor [weak self] in self?.receiveLevel(level) }
     })
     private let client = TranscriptionClient()
+    private let cache = RecordingCache(directory: RecordingCache.defaultDirectory())
     private var overlay: DictationOverlay?
     private var hotkey: HotkeyMonitor?
     private var permissionProblem: Problem?
     private var transientProblem: Problem?
     private var clearProblemTask: Task<Void, Never>?
+    private var notice: String?
+    private var clearNoticeTask: Task<Void, Never>?
+    private var uploadingIDs: Set<String> = []
+    private var retryingIDs: Set<String> = [] {
+        didSet { updateOverlay() }
+    }
     private var level = 0.0
     private var lastLevelAt: TimeInterval?
     private var started = false
+    private var refreshTask: Task<Void, Never>?
 
     private lazy var dictation: Dictation = {
         let dictation = Dictation(services: DictationServices(
@@ -136,11 +152,7 @@ final class AppModel: ObservableObject {
             cancelRecording: { [recorder] in recorder.cancel() },
             transcribe: { [weak self] wav in
                 guard let self else { throw CancellationError() }
-                return try await self.client.transcribe(
-                    wav: wav, serverURL: self.serverURL,
-                    apiKey: self.apiKey, language: self.language,
-                    knownWords: self.knownWords
-                )
+                return try await self.transcribeKeepingAudio(wav)
             },
             paste: { text in try KeyboardPaste.paste(text) },
             cue: { [weak self] cue in self?.play(cue) },
@@ -161,9 +173,10 @@ final class AppModel: ObservableObject {
         let stored = UserDefaults.standard
         enabled = stored.object(forKey: "enabled") as? Bool ?? true
         serverURL = stored.string(forKey: "serverURL") ?? "http://localhost:8000/v1"
-        key = DictationKey(rawValue: stored.string(forKey: "dictationKey") ?? "") ?? .rightAlt
+        let storedKey = DictationKey(rawValue: stored.string(forKey: "dictationKey") ?? "") ?? .rightAlt
+        key = storedKey
         let storedHandsFreeKey = DictationKey(rawValue: stored.string(forKey: "handsFreeKey") ?? "")
-        handsFreeKey = storedHandsFreeKey == key ? nil : storedHandsFreeKey
+        handsFreeKey = storedHandsFreeKey == storedKey ? nil : storedHandsFreeKey
         language = stored.string(forKey: "language") ?? ""
         knownWords = stored.stringArray(forKey: "knownWords") ?? []
         sounds = stored.object(forKey: "sounds") as? Bool ?? true
@@ -179,8 +192,135 @@ final class AppModel: ObservableObject {
         _ = dictation
         overlay = DictationOverlay()
         updateOverlay()
+        refreshRecordings()
+        refreshTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(60))
+                guard let self else { return }
+                self.refreshRecordings()
+            }
+        }
         await refreshPermissions(prompt: true)
         await checkReachability()
+        refreshRecordings()
+        if !unsentRecordings.isEmpty { offerUnsentRecordings() }
+    }
+
+    func retry(_ recording: CachedRecording) async {
+        _ = await retryRecording(recording)
+    }
+
+    func discard(_ recording: CachedRecording) {
+        cache.remove(recording)
+        refreshRecordings()
+    }
+
+    private func retryRecording(_ recording: CachedRecording) async -> Bool {
+        guard !retryingIDs.contains(recording.id) else { return false }
+        retryingIDs.insert(recording.id)
+        defer { retryingIDs.remove(recording.id) }
+        let wav: Data
+        do {
+            wav = try cache.load(recording)
+        } catch {
+            refreshRecordings()
+            report(AppIssue.recordingMissing)
+            return false
+        }
+        do {
+            let text = try await send(wav)
+            cache.remove(recording)
+            refreshRecordings()
+            if text.isEmpty {
+                show(notice: "No speech in recording")
+            } else {
+                recentTranscripts = Array(([text] + recentTranscripts).prefix(5))
+                if copy(text) { show(notice: "Transcript copied") }
+            }
+            return true
+        } catch {
+            if !FileManager.default.fileExists(atPath: recording.url.path) {
+                guard (try? cache.save(wav)) != nil else {
+                    refreshRecordings()
+                    report(error)
+                    return false
+                }
+            }
+            refreshRecordings()
+            report(RecordingSaved(underlying: error))
+            return false
+        }
+    }
+
+    private func transcribeKeepingAudio(_ wav: Data) async throws -> String {
+        let saved = try? cache.save(wav)
+        if let saved { uploadingIDs.insert(saved.id) }
+        defer {
+            if let saved { uploadingIDs.remove(saved.id) }
+            refreshRecordings()
+        }
+        do {
+            let text = try await send(wav)
+            if let saved { cache.remove(saved) }
+            return text
+        } catch {
+            guard let saved else { throw error }
+            if !FileManager.default.fileExists(atPath: saved.url.path) {
+                guard (try? cache.save(wav)) != nil else { throw error }
+            }
+            throw RecordingSaved(underlying: error)
+        }
+    }
+
+    private func send(_ wav: Data) async throws -> String {
+        try await client.transcribe(
+            wav: wav, serverURL: serverURL, apiKey: apiKey,
+            language: language, knownWords: knownWords
+        )
+    }
+
+    private func refreshRecordings() {
+        unsentRecordings = cache.recordings(protecting: uploadingIDs.union(retryingIDs))
+            .filter { !uploadingIDs.contains($0.id) }
+    }
+
+    private func offerUnsentRecordings() {
+        let recordings = unsentRecordings
+        guard let newest = recordings.first, let oldest = recordings.last else { return }
+        let alert = NSAlert()
+        if recordings.count == 1 {
+            alert.messageText = "Unsent recording found"
+            alert.informativeText = "Audio recorded \(RecordingFormat.ago(newest.recordedAt)) "
+                + "(\(RecordingFormat.elapsed(newest.duration))) wasn't transcribed. "
+                + "The transcript will be copied to the clipboard."
+        } else {
+            alert.messageText = "\(recordings.count) unsent recordings found"
+            alert.informativeText = "Audio recorded between \(RecordingFormat.ago(oldest.recordedAt)) "
+                + "and \(RecordingFormat.ago(newest.recordedAt)) wasn't transcribed. "
+                + "Each transcript will be copied to the clipboard."
+        }
+        alert.addButton(withTitle: "Transcribe")
+        alert.addButton(withTitle: "Later")
+        alert.addButton(withTitle: "Discard")
+        alert.buttons.last?.hasDestructiveAction = true
+        if #unavailable(macOS 15) {
+            NSApp.activate(ignoringOtherApps: true)
+        } else {
+            NSApp.activate()
+        }
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            Task { [weak self] in
+                for recording in recordings.reversed() {
+                    guard let self, await self.retryRecording(recording) else { return }
+                }
+            }
+        case .alertThirdButtonReturn:
+            recordings.forEach(cache.remove)
+            refreshRecordings()
+        default:
+            break
+        }
     }
 
     func refreshPermissions(prompt: Bool = false) async {
@@ -225,6 +365,7 @@ final class AppModel: ObservableObject {
     }
 
     func checkReachability() async {
+        serverReachable = nil
         serverReachable = await client.reachable(serverURL: serverURL)
     }
 
@@ -249,10 +390,16 @@ final class AppModel: ObservableObject {
     }
 
     func copyTranscript(_ text: String) {
+        _ = copy(text)
+    }
+
+    private func copy(_ text: String) -> Bool {
         NSPasteboard.general.clearContents()
-        if !NSPasteboard.general.setString(text, forType: .string) {
+        guard NSPasteboard.general.setString(text, forType: .string) else {
             report(AppIssue.clipboard)
+            return false
         }
+        return true
     }
 
     func openProblemSettings() {
@@ -264,23 +411,53 @@ final class AppModel: ObservableObject {
         let issue = error as? AppIssue
         let message: String
         switch error {
-        case let known as AppIssue: message = known.localizedDescription
-        case let known as SpeechError: message = known.localizedDescription
-        case let known as RecordingError: message = known.localizedDescription
-        default: message = "Operation failed"
+        case let saved as RecordingSaved:
+            let reason = saved.underlying is SpeechError
+                ? Self.message(for: saved.underlying) : "Transcription failed"
+            message = "\(reason) — recording saved"
+        default: message = Self.message(for: error)
         }
         if let issue, issue.pane != nil {
             permissionProblem = Problem(text: message, pane: issue.pane)
         }
         transientProblem = Problem(text: message, pane: nil)
+        notice = nil
+        clearNoticeTask?.cancel()
+        let seconds = error is RecordingSaved ? 8 : 5
         clearProblemTask?.cancel()
         clearProblemTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(5))
+            try? await Task.sleep(for: .seconds(seconds))
             guard !Task.isCancelled else { return }
             self?.transientProblem = nil
             self?.publishProblem()
         }
         publishProblem()
+    }
+
+    private static func message(for error: Error) -> String {
+        switch error {
+        case let known as AppIssue: known.localizedDescription
+        case let known as SpeechError: known.localizedDescription
+        case let known as RecordingError: known.localizedDescription
+        default: "Operation failed"
+        }
+    }
+
+    private func show(notice text: String) {
+        notice = text
+        if transientProblem != nil {
+            clearProblemTask?.cancel()
+            transientProblem = nil
+            publishProblem()
+        }
+        clearNoticeTask?.cancel()
+        clearNoticeTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(3))
+            guard !Task.isCancelled else { return }
+            self?.notice = nil
+            self?.updateOverlay()
+        }
+        updateOverlay()
     }
 
     private func publishProblem() {
@@ -298,9 +475,11 @@ final class AppModel: ObservableObject {
     }
 
     private func updateOverlay() {
+        let message = transientProblem.map { OverlayMessage.error($0.text) }
+            ?? notice.map { OverlayMessage.notice($0) }
         overlay?.update(
-            state: state, level: level, keyName: (handsFreeKey ?? key).title,
-            problem: transientProblem?.text
+            state: state == .idle && !retryingIDs.isEmpty ? .transcribing : state,
+            level: level, keyName: (handsFreeKey ?? key).title, message: message
         )
     }
 

@@ -19,6 +19,10 @@ struct WhisperLocalApp: App {
                     Circle()
                         .fill(style.color)
                         .frame(width: 5, height: 5)
+                } else if model.state == .idle && !model.unsentRecordings.isEmpty {
+                    Circle()
+                        .fill(Theme.amber)
+                        .frame(width: 5, height: 5)
                 }
             }
             .accessibilityLabel("Whisper Local")
@@ -29,6 +33,7 @@ struct WhisperLocalApp: App {
 
 private struct MenuContent: View {
     @ObservedObject var model: AppModel
+    @Environment(\.openSettings) private var openSettings
 
     var body: some View {
         Group {
@@ -43,6 +48,16 @@ private struct MenuContent: View {
                     }
                 }
             }
+            if !model.unsentRecordings.isEmpty {
+                Section("Unsent recordings") {
+                    ForEach(model.unsentRecordings) { recording in
+                        Menu(RecordingFormat.label(for: recording)) {
+                            Button("Transcribe and Copy") { Task { await model.retry(recording) } }
+                            Button("Discard") { model.discard(recording) }
+                        }
+                    }
+                }
+            }
             if let problem = model.problem {
                 if problem.pane == nil {
                     Text(problem.text)
@@ -50,7 +65,10 @@ private struct MenuContent: View {
                     Button(problem.text) { model.openProblemSettings() }
                 }
             }
-            SettingsLink { Text("Settings…") }
+            Button("Settings…") {
+                openSettings()
+                SettingsWindow.shared.present()
+            }
             Button("Quit") { NSApplication.shared.terminate(nil) }
         }
         .task { await model.refreshPermissions() }
@@ -68,53 +86,82 @@ private struct SettingsView: View {
 
     var body: some View {
         Form {
-            TextField("Server URL", text: $model.serverURL)
-                .onSubmit { Task { await model.checkReachability() } }
-            SecureField("API key", text: Binding(
-                get: { model.apiKey },
-                set: { model.updateAPIKey($0) }
-            ))
-            Picker("Dictation key", selection: $model.key) {
-                ForEach(DictationKey.allCases) { key in
-                    Text(key.title).tag(key)
-                }
+            Section("Server") {
+                TextField("Server URL", text: $model.serverURL, prompt: Text("http://localhost:8000/v1"))
+                    .onSubmit { Task { await model.checkReachability() } }
+                SecureField("API key", text: Binding(
+                    get: { model.apiKey },
+                    set: { model.updateAPIKey($0) }
+                ), prompt: Text("Optional"))
+                connectionRow
             }
-            Picker("Hands-free", selection: $model.handsFreeKey) {
-                Text("Double-tap \(model.key.title)").tag(Optional<DictationKey>.none)
-                ForEach(DictationKey.allCases.filter { $0 != model.key }) { key in
-                    Text(key.title).tag(Optional<DictationKey>.some(key))
+            Section("Dictation") {
+                Picker("Dictation key", selection: $model.key) {
+                    ForEach(DictationKey.allCases) { key in
+                        Text(key.title).tag(key)
+                    }
                 }
+                Picker("Hands-free", selection: $model.handsFreeKey) {
+                    Text("Double-tap \(model.key.title)").tag(Optional<DictationKey>.none)
+                    ForEach(DictationKey.allCases.filter { $0 != model.key }) { key in
+                        Text(key.title).tag(Optional<DictationKey>.some(key))
+                    }
+                }
+                TextField("Language", text: $model.language, prompt: Text("Auto-detect"))
             }
-            TextField("Language (blank for auto)", text: $model.language)
-            VStack(alignment: .leading) {
-                Text("Known words (one per line)")
+            Section {
                 TextEditor(text: $knownWordsText)
-                    .frame(height: 80)
+                    .font(.body)
+                    .scrollContentBackground(.hidden)
+                    .padding(6)
+                    .frame(height: 90)
+                    .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
+                    .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.separator))
                     .accessibilityLabel("Known words")
+                    .onAppear { knownWordsText = KnownWords.format(model.knownWords) }
+                    .onChange(of: knownWordsText) { _, value in
+                        model.knownWords = KnownWords.parse(value)
+                    }
+            } header: {
+                Text("Known words")
+            } footer: {
+                Text("One word or phrase per line. Sent to the server as context to improve recognition of names and jargon.")
             }
-            .onAppear { knownWordsText = model.knownWords.joined(separator: "\n") }
-            .onChange(of: knownWordsText) { _, value in
-                model.knownWords = value.components(separatedBy: .newlines)
-                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                    .filter { !$0.isEmpty }
-            }
-            Toggle("Sounds", isOn: $model.sounds)
-            Toggle("Launch at login", isOn: Binding(
-                get: { model.launchAtLogin },
-                set: { model.setLaunchAtLogin($0) }
-            ))
-            HStack {
-                Text(connectionText)
-                Spacer()
-                Button("Check connection") { Task { await model.checkReachability() } }
+            Section("General") {
+                Toggle("Sounds", isOn: $model.sounds)
+                Toggle("Launch at login", isOn: Binding(
+                    get: { model.launchAtLogin },
+                    set: { model.setLaunchAtLogin($0) }
+                ))
             }
         }
         .formStyle(.grouped)
+        .scrollDisabled(true)
+        .fixedSize(horizontal: false, vertical: true)
         .frame(width: 480)
-        .padding()
+        .background(SettingsWindowAccessor())
+        .onAppear { SettingsWindow.shared.present() }
         .task {
             await model.refreshPermissions()
             await model.checkReachability()
+        }
+    }
+
+    private var connectionRow: some View {
+        HStack(spacing: 8) {
+            Group {
+                if let reachable = model.serverReachable {
+                    Circle()
+                        .fill(reachable ? Color.green : Color.red)
+                        .frame(width: 8, height: 8)
+                } else {
+                    ProgressView().controlSize(.mini)
+                }
+            }
+            .frame(width: 16, height: 16)
+            Text(connectionText)
+            Spacer()
+            Button("Check connection") { Task { await model.checkReachability() } }
         }
     }
 

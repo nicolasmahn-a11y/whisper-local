@@ -1,3 +1,4 @@
+#if canImport(XCTest)
 import XCTest
 @testable import WhisperLocal
 
@@ -28,3 +29,4 @@ final class EncodingTests: XCTestCase {
         XCTAssertNil(automatic.range(of: Data("name=\"prompt\"".utf8)))
     }
 }
+#endif

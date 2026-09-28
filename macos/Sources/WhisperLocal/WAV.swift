@@ -18,6 +18,17 @@ enum WAV {
         wav.append(pcm16)
         return wav
     }
+
+    /// Seconds of audio in a WAV produced by `encode` (16 kHz mono PCM16, 44-byte header).
+    /// Returns 0 for data shorter than the header.
+    static func duration(of wav: Data, sampleRate: UInt32 = 16_000) -> TimeInterval {
+        duration(byteCount: wav.count, sampleRate: sampleRate)
+    }
+
+    static func duration(byteCount: Int, sampleRate: UInt32 = 16_000) -> TimeInterval {
+        guard byteCount > 44, sampleRate > 0 else { return 0 }
+        return TimeInterval(byteCount - 44) / (TimeInterval(sampleRate) * 2)
+    }
 }
 
 private extension Data {
