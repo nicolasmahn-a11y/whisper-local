@@ -75,9 +75,9 @@ def test_empty_key_sends_no_authorization_header(monkeypatch):
     transcription_request = requests[0][0]
     status_request = requests[1][0]
     assert transcription_request.full_url == (
-        "http://localhost:8000/v1/audio/transcriptions"
+        "http://localhost:8178/v1/audio/transcriptions"
     )
-    assert status_request.full_url == "http://localhost:8000/v1/models"
+    assert status_request.full_url == "http://localhost:8178/v1/models"
     assert transcription_request.get_header("Authorization") is None
     assert status_request.get_header("Authorization") is None
 

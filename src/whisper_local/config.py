@@ -12,7 +12,7 @@ CONFIG_PATH = Path.home() / ".config" / "whisper-local" / "config.toml"
 
 @dataclass(frozen=True)
 class Config:
-    url: str = "http://localhost:8000/v1"
+    url: str = "http://localhost:8178/v1"
     api_key: str = ""
     model: str = "qwen3-asr"
     key: str = "right_alt" if sys.platform == "darwin" else "right_ctrl"

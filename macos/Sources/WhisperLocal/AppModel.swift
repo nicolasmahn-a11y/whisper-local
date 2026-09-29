@@ -172,7 +172,7 @@ final class AppModel: ObservableObject {
     init() {
         let stored = UserDefaults.standard
         enabled = stored.object(forKey: "enabled") as? Bool ?? true
-        serverURL = stored.string(forKey: "serverURL") ?? "http://localhost:8000/v1"
+        serverURL = stored.string(forKey: "serverURL") ?? "http://localhost:8178/v1"
         let storedKey = DictationKey(rawValue: stored.string(forKey: "dictationKey") ?? "") ?? .rightAlt
         key = storedKey
         let storedHandsFreeKey = DictationKey(rawValue: stored.string(forKey: "handsFreeKey") ?? "")

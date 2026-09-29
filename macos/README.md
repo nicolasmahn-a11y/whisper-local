@@ -53,7 +53,7 @@ and add it again.
 Open Settings from the menu; it is grouped into Server, Dictation, Known
 words and General.
 
-Server URL defaults to `http://localhost:8000/v1`; the API key is optional
+Server URL defaults to `http://localhost:8178/v1`; the API key is optional
 and kept in the Keychain, and stays on the configured server through
 redirects. The app asks for the model `qwen3-asr`, so serve it under that
 name (see the main README). A dot next to Check connection shows whether the

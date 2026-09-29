@@ -17,7 +17,7 @@ OpenAI-compatible `/v1/audio/transcriptions` endpoint, for example vLLM:
 
     vllm serve Qwen/Qwen3-ASR-1.7B --served-model-name qwen3-asr
 
-The default server is `http://localhost:8000/v1`. To use another machine, or a
+The default server is `http://localhost:8178/v1`. To use another machine, or a
 server that wants a key, set `url` and `api_key` in the Linux window or in
 `~/.config/whisper-local/config.toml`. Leave the API key field empty for a
 server without a key. On the author's GPU, 15 s of speech comes back as text
@@ -87,7 +87,7 @@ creating it with mode `0600`. If you create the file by hand, run
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `url` | `"http://localhost:8000/v1"` | The speech server, up to and including `/v1` |
+| `url` | `"http://localhost:8178/v1"` | The speech server, up to and including `/v1` |
 | `api_key` | `""` | Sent as a Bearer token; `WHISPER_LOCAL_API_KEY` is used when the setting is absent |
 | `model` | `"qwen3-asr"` | The model name the server expects |
 | `key` | `"right_ctrl"` | The dictation key |

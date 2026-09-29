@@ -87,7 +87,7 @@ private struct SettingsView: View {
     var body: some View {
         Form {
             Section("Server") {
-                TextField("Server URL", text: $model.serverURL, prompt: Text("http://localhost:8000/v1"))
+                TextField("Server URL", text: $model.serverURL, prompt: Text("http://localhost:8178/v1"))
                     .onSubmit { Task { await model.checkReachability() } }
                 SecureField("API key", text: Binding(
                     get: { model.apiKey },

@@ -35,7 +35,7 @@ def test_defaults_allow_an_unauthenticated_local_server(tmp_path, monkeypatch):
 
     loaded = config.load(tmp_path / "missing.toml")
 
-    assert loaded.url == "http://localhost:8000/v1"
+    assert loaded.url == "http://localhost:8178/v1"
     assert loaded.api_key == ""
     assert loaded.vocabulary == []
 
