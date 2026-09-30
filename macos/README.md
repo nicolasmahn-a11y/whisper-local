@@ -21,20 +21,22 @@ the Dock icon (and Cmd-Tab entry) appears only while Settings is open, so you
 can bring it to the front like a normal window, and disappears again once you
 close it.
 
-Tests are split by framework: `KnownWordsTests`, `RecordingCacheTests` and
-`TranscriptionClientTests` are guarded by `#if canImport(Testing)` (Swift
-Testing, needing Swift 6 / Xcode 16+); `DictationTests`, `EncodingTests` and
-`HotkeyTests` are guarded by `#if canImport(XCTest)` and need full Xcode. On
-a Command Line Tools-only Mac, plain `swift test` builds but runs no tests
-at all, since neither framework is on the default search path. Run it as:
+Tests are split by framework: `KnownWordsTests`, `RecordingCacheTests`,
+`ReplacementsTests` and `TranscriptionClientTests` are guarded by
+`#if canImport(Testing)` (Swift Testing, needing Swift 6 / Xcode 16+);
+`DictationTests`, `EncodingTests` and `HotkeyTests` are guarded by
+`#if canImport(XCTest)` and need full Xcode. On a Command Line Tools-only
+Mac, plain `swift test` builds but runs no tests at all, since neither
+framework is on the default search path. Run it as:
 
     D=/Library/Developer/CommandLineTools/Library/Developer
     swift test -Xswiftc -F -Xswiftc $D/Frameworks -Xlinker -rpath -Xlinker $D/Frameworks -Xlinker -rpath -Xlinker $D/usr/lib
 
 to put Swift Testing on the search path; that runs `KnownWordsTests`,
-`RecordingCacheTests` and `TranscriptionClientTests`. `DictationTests` and
-`EncodingTests` also run under `./check-on-linux.sh` (see below), as does
-`RecordingCacheTests`; `HotkeyTests` needs full Xcode either way.
+`RecordingCacheTests`, `ReplacementsTests` and `TranscriptionClientTests`.
+`DictationTests` and `EncodingTests` also run under `./check-on-linux.sh` (see
+below), as does `RecordingCacheTests`; `HotkeyTests` needs full Xcode either
+way.
 
 ## Permissions
 
@@ -51,7 +53,7 @@ and add it again.
 ## Settings
 
 Open Settings from the menu; it is grouped into Server, Dictation, Known
-words and General.
+words, Replacements and General.
 
 Server URL defaults to `http://localhost:8178/v1`; the API key is optional
 and kept in the Keychain, and stays on the configured server through
@@ -63,8 +65,13 @@ dictations aren't killed just because the server stays quiet until it's done.
 
 Dictation has the dictation and hands-free keys and the language. Known
 words takes one word or phrase per line, sent as transcription context to
-help recognise names and jargon. General has sounds and launch at login. The
-menu keeps the last five transcripts in memory; click one to copy it.
+help recognise names and jargon. Replacements takes one rule per line, like
+`Persuus, Pursus -> Perseus`, and rewrites those words in every transcript
+(whole words, ignoring case). Known words nudge the spelling of words the
+model already hears right; replacements fix words it keeps mishearing, for
+example because of how you pronounce them. General has sounds and launch at
+login. The menu keeps the last five transcripts in memory; click one to copy
+it.
 
 ## The overlay pill
 

@@ -118,6 +118,9 @@ final class AppModel: ObservableObject {
     @Published var knownWords: [String] {
         didSet { defaults.set(knownWords, forKey: "knownWords") }
     }
+    @Published var replacements: [String] {
+        didSet { defaults.set(replacements, forKey: "replacements") }
+    }
     @Published var sounds: Bool {
         didSet { defaults.set(sounds, forKey: "sounds") }
     }
@@ -179,6 +182,7 @@ final class AppModel: ObservableObject {
         handsFreeKey = storedHandsFreeKey == storedKey ? nil : storedHandsFreeKey
         language = stored.string(forKey: "language") ?? ""
         knownWords = stored.stringArray(forKey: "knownWords") ?? []
+        replacements = stored.stringArray(forKey: "replacements") ?? []
         sounds = stored.object(forKey: "sounds") as? Bool ?? true
         apiKey = Keychain.apiKey() ?? ""
         let status = SMAppService.mainApp.status
@@ -273,10 +277,11 @@ final class AppModel: ObservableObject {
     }
 
     private func send(_ wav: Data) async throws -> String {
-        try await client.transcribe(
+        let text = try await client.transcribe(
             wav: wav, serverURL: serverURL, apiKey: apiKey,
             language: language, knownWords: knownWords
         )
+        return Replacements.apply(Replacements.rules(from: replacements), to: text)
     }
 
     private func refreshRecordings() {

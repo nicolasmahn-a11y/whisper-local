@@ -80,9 +80,28 @@ private struct MenuContent: View {
     }
 }
 
+/// One entry per line, stored as the non-blank lines.
+private struct LinesEditor: View {
+    let label: String
+    @Binding var lines: [String]
+    @State private var text = ""
+
+    var body: some View {
+        TextEditor(text: $text)
+            .font(.body)
+            .scrollContentBackground(.hidden)
+            .padding(6)
+            .frame(height: 90)
+            .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
+            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.separator))
+            .accessibilityLabel(label)
+            .onAppear { text = KnownWords.format(lines) }
+            .onChange(of: text) { _, value in lines = KnownWords.parse(value) }
+    }
+}
+
 private struct SettingsView: View {
     @ObservedObject var model: AppModel
-    @State private var knownWordsText = ""
 
     var body: some View {
         Form {
@@ -110,22 +129,18 @@ private struct SettingsView: View {
                 TextField("Language", text: $model.language, prompt: Text("Auto-detect"))
             }
             Section {
-                TextEditor(text: $knownWordsText)
-                    .font(.body)
-                    .scrollContentBackground(.hidden)
-                    .padding(6)
-                    .frame(height: 90)
-                    .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
-                    .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.separator))
-                    .accessibilityLabel("Known words")
-                    .onAppear { knownWordsText = KnownWords.format(model.knownWords) }
-                    .onChange(of: knownWordsText) { _, value in
-                        model.knownWords = KnownWords.parse(value)
-                    }
+                LinesEditor(label: "Known words", lines: $model.knownWords)
             } header: {
                 Text("Known words")
             } footer: {
                 Text("One word or phrase per line. Sent to the server as context to improve recognition of names and jargon.")
+            }
+            Section {
+                LinesEditor(label: "Replacements", lines: $model.replacements)
+            } header: {
+                Text("Replacements")
+            } footer: {
+                Text("One rule per line, like `Persuus, Pursus -> Perseus`. Applied to every transcript, so words you pronounce differently come out right.")
             }
             Section("General") {
                 Toggle("Sounds", isOn: $model.sounds)
