@@ -21,6 +21,11 @@ enum Replacements {
         return Replacement(heard: heard, target: target)
     }
 
+    /// Inverse of `parse(line:)` for the settings editor.
+    static func line(heard: String, target: String) -> String {
+        "\(heard) -> \(target)"
+    }
+
     /// Parses each line and drops the ones that aren't rules, keeping order.
     static func rules(from lines: [String]) -> [Replacement] {
         lines.compactMap { parse(line: $0) }

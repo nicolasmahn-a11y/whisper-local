@@ -61,30 +61,36 @@ works, remove the app from the list and add it again.
 
 ## Settings
 
-Open Settings from the menu; it is grouped into Server, Dictation, Known
-words, Replacements, Rewording and General.
+Open Settings from the menu. It has four tabs, each short enough to fit
+on screen without scrolling: General, Dictation, Vocabulary and Rewording.
 
-Server URL defaults to `http://localhost:8178/v1`; the API key is optional
-and kept in the Keychain, and stays on the configured server through
-redirects. The app asks for the model `qwen3-asr`, so serve it under that
-name (see the main README). A dot next to Check connection shows whether the
-server answers: green for reachable, red for not, a spinner while checking.
-A request's timeout is 60 s plus twice the recording's length, so long
-dictations aren't killed just because the server stays quiet until it's done.
+General has Enabled (the same switch as in the menu, which turns the keys
+off without quitting), sounds and launch at login.
 
-Dictation has the dictation and hands-free keys, the language, and "Keep
-microphone ready for an hour after dictating" (see below). Known
-words takes one word or phrase per line, sent as transcription context to
-help recognise names and jargon. Replacements takes one rule per line, like
+Dictation has the speech server, the dictation and hands-free keys, the
+language, and "Keep microphone ready for an hour after dictating" (see
+below). Server URL defaults to `http://localhost:8178/v1`; the API key is
+optional and kept in the Keychain, and stays on the configured server
+through redirects. The app asks for the model `qwen3-asr`, so serve it
+under that name (see the main README). A dot next to Check connection shows
+whether the server answers: green for reachable, red for not, a spinner
+while checking. A request's timeout is 60 s plus twice the recording's
+length, so long dictations aren't killed just because the server stays
+quiet until it's done.
+
+Vocabulary has Known words and Replacements. Known words takes one word or
+phrase per line, sent as transcription context to help recognise names and
+jargon. Replacements takes one rule per line, like
 `Persuus, Pursus -> Perseus`, and rewrites those words in every transcript
 (whole words, ignoring case). Known words nudge the spelling of words the
 model already hears right; replacements fix words it keeps mishearing, for
-example because of how you pronounce them. Rewording has the reword key,
-whether to reword the whole field when nothing is selected, whether to
-clean up every dictation, and its own server URL, API key and Claude
-fallback; see below. General has sounds and launch at
-login. The menu keeps the last five transcripts in memory; click one to copy
-it.
+example because of how you pronounce them.
+
+Rewording has the reword key and whether to reword the whole field when
+nothing is selected, "Clean up every dictation", and the Model server: its
+URL, API key and Claude fallback; see below.
+
+The menu keeps the last five transcripts in memory; click one to copy it.
 
 ## Catching the first and last word
 
@@ -159,7 +165,8 @@ models on demand may miss the 15 s on the first cleanup after a pause.
 ### Models
 
 Rewording runs on a language model, not on the speech server. The
-rewording server is an OpenAI-compatible `/v1` endpoint; it defaults to
+rewording server (Model server in Settings → Rewording) is an
+OpenAI-compatible `/v1` endpoint; it defaults to
 `http://localhost:8400/v1`, and the API key is optional and kept in the
 Keychain. The app asks it for its models and uses the first with "gemma" in
 its name, else the first with "qwen" (but not "asr"), both for rewording

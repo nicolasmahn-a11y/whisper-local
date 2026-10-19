@@ -7,6 +7,8 @@ import SwiftUI
 final class SettingsWindow {
     static let shared = SettingsWindow()
 
+    /// Kept across close: SwiftUI keeps the Settings window alive for reopening, so
+    /// the hosting view does not move windows again. A freed window re-attaches.
     private weak var window: NSWindow?
     private var closeObserver: NSObjectProtocol?
 
@@ -23,21 +25,22 @@ final class SettingsWindow {
         present()
     }
 
+    /// Deferred one turn of the run loop: a menu bar extra action runs while the
+    /// status menu is still tracking, and AppKit returns focus to the previously
+    /// active app when tracking ends, which undoes an activation made inside the action.
     func present() {
         NSApp.setActivationPolicy(.regular)
-        if #unavailable(macOS 15) {
-            NSApp.activate(ignoringOtherApps: true)
-        } else {
-            NSApp.activate()
-        }
+        DispatchQueue.main.async { self.raise() }
+    }
+
+    private func raise() {
+        NSApp.activate(ignoringOtherApps: true)
         guard let window else { return }
-        window.makeKeyAndOrderFront(nil)
         window.orderFrontRegardless()
+        window.makeKeyAndOrderFront(nil)
     }
 
     private func didClose() {
-        window = nil
-        removeObserver()
         NSApp.setActivationPolicy(.accessory)
         NSApp.hide(nil)
         DispatchQueue.main.async { NSApp.unhideWithoutActivation() }
