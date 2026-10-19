@@ -71,8 +71,8 @@ in normal text fields.
   text is being prepared, and the reason when something fails. Failures also
   play two low tones.
 - Text arrives in the order it was spoken and stays on the clipboard afterwards.
-- The window (Linux) and the menu (macOS) keep the five most recent
-  transcripts, so you can copy one again.
+- The window (Linux) keeps the five most recent transcripts, so you can
+  copy one again.
 - The microphone is open only while recording, so the system's microphone
   indicator shows when it listens. On macOS you can opt in to keeping it
   open for an hour after dictating; see below.

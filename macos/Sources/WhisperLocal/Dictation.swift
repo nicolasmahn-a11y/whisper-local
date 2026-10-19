@@ -63,7 +63,6 @@ final class Dictation {
         }
     }
     var onState: @MainActor (DictationState) -> Void = { _ in }
-    var onTranscript: @MainActor (String) -> Void = { _ in }
     var onError: @MainActor (Error) -> Void = { _ in }
 
     init(
@@ -215,7 +214,6 @@ final class Dictation {
             do {
                 let text = try await services.transcribe(wav)
                 if !text.isEmpty {
-                    onTranscript(text)
                     while keyIsDown || handsFreeKeyIsDown {
                         await withCheckedContinuation { keyUpWaiter = $0 }
                     }

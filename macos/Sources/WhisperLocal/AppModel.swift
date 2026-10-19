@@ -84,7 +84,6 @@ final class AppModel: ObservableObject {
             }
         }
     }
-    @Published private(set) var recentTranscripts: [String] = []
     @Published private(set) var unsentRecordings: [CachedRecording] = []
     @Published private(set) var problem: Problem? = nil
     /// Separate from `problem`: screenshots are optional, so dictation and the menu bar icon stay normal.
@@ -238,10 +237,6 @@ final class AppModel: ObservableObject {
         dictation.enabled = enabled
         dictation.usesDedicatedHandsFreeKey = handsFreeKey != nil
         dictation.onState = { [weak self] in self?.state = $0 }
-        dictation.onTranscript = { [weak self] text in
-            guard let self else { return }
-            self.recentTranscripts = Array(([text] + self.recentTranscripts).prefix(5))
-        }
         dictation.onError = { [weak self] in self?.report($0) }
         return dictation
     }()
@@ -333,7 +328,6 @@ final class AppModel: ObservableObject {
             if text.isEmpty {
                 show(notice: "No speech in recording")
             } else {
-                recentTranscripts = Array(([text] + recentTranscripts).prefix(5))
                 if copy(text) { show(notice: "Transcript copied") }
             }
             return true
@@ -619,12 +613,10 @@ final class AppModel: ObservableObject {
 
     private func reword(_ text: String, screenshot: Data? = nil) async throws -> String {
         showsRewording = true
-        let result = try await Rewording.reword(
+        return try await Rewording.reword(
             Replacements.apply(Replacements.rules(from: replacements), to: text),
             using: rewordServices(style: .written), style: .written, screenshot: screenshot
         )
-        recentTranscripts = Array(([result] + recentTranscripts).prefix(5))
-        return result
     }
 
     private func rewordServices(
@@ -723,10 +715,6 @@ final class AppModel: ObservableObject {
         } catch {
             report(AppIssue.launchAtLogin)
         }
-    }
-
-    func copyTranscript(_ text: String) {
-        _ = copy(text)
     }
 
     private func copy(_ text: String) -> Bool {

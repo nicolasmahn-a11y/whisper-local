@@ -38,16 +38,6 @@ private struct MenuContent: View {
     var body: some View {
         Group {
             Toggle("Enabled", isOn: $model.enabled)
-            if model.recentTranscripts.isEmpty {
-                Text("No transcript yet")
-            } else {
-                ForEach(model.recentTranscripts.indices, id: \.self) { index in
-                    let transcript = model.recentTranscripts[index]
-                    Button(label(for: transcript)) {
-                        model.copyTranscript(transcript)
-                    }
-                }
-            }
             if !model.unsentRecordings.isEmpty {
                 Section("Unsent recordings") {
                     ForEach(model.unsentRecordings) { recording in
@@ -78,10 +68,5 @@ private struct MenuContent: View {
             Button("Quit") { NSApplication.shared.terminate(nil) }
         }
         .task { await model.refreshPermissions() }
-    }
-
-    private func label(for transcript: String) -> String {
-        let text = transcript.split(whereSeparator: \.isWhitespace).joined(separator: " ")
-        return text.count > 80 ? String(text.prefix(80)) + "…" : text
     }
 }

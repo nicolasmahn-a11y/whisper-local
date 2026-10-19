@@ -98,8 +98,6 @@ nothing is selected, "Clean up every dictation", the two screenshot
 toggles, and the Model server: its URL, API key and Claude fallback; see
 below.
 
-The menu keeps the last five transcripts in memory; click one to copy it.
-
 ## Catching the first and last word
 
 Recording keeps going for 0.3 s after you finish, so the last word isn't
@@ -137,7 +135,7 @@ didn't say. The key defaults to Right Command; a tap means press and release wit
 shortcuts still work. Pick another
 key, or None, in Settings → Rewording; the dictation and hands-free keys
 are not offered. The pill says "Rewording…" while it works. The result stays
-on the clipboard and joins the recent transcripts in the menu. If you switch
+on the clipboard. If you switch
 to another app before it is done, the result is only copied, not pasted. If
 rewording fails, the clipboard gets its previous text back. The key does
 nothing while you are dictating. Text longer than 6000 characters is
