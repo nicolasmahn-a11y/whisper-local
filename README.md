@@ -77,10 +77,11 @@ in normal text fields.
   indicator shows when it listens. On macOS you can opt in to keeping it
   open for an hour after dictating; see below.
 - On macOS only, select text and tap Right Command (configurable) to have a
-  language model rewrite it as if you had typed it: concise, no fillers or
-  false starts, same voice and language. With nothing selected it rewords
-  the whole field. An opt-in setting also lightly cleans up every dictation
-  before pasting it. See [macos/README.md](macos/README.md#rewording).
+  language model rewrite it as if you had typed it: without what you take
+  back, main point first, same voice and language. With nothing selected
+  it rewords the whole field. An opt-in setting also lightly cleans up every
+  dictation before pasting it. See
+  [macos/README.md](macos/README.md#rewording).
 
 Opening the microphone takes about 80 ms, which can cut off the first
 syllable; start speaking just after the tone. On macOS, recording also runs

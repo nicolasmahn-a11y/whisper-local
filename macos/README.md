@@ -110,9 +110,13 @@ one of two ways.
 ### Rewording selected text
 
 Select text anywhere and tap the reword key, and the selection is replaced
-by a version that reads as if you had typed it: concise and direct, with
-fillers, hedges, repeats and false starts gone and long sentences
-shortened. It keeps your voice (first person stays first person, questions
+by the message you meant to write, as if you had typed it carefully. Spoken
+thoughts wander, so this goes further than cleanup: it drops what you take
+back ("never mind", "forget that", a thought corrected halfway), fillers,
+repeats and asides that make no point, then rebuilds the rest to open with
+your main point or request, followed by the others, each with its reason.
+Several separate requests become a numbered list. It keeps every point you
+still stand behind, your voice (first person stays first person, questions
 stay questions), your formality and your language, and adds nothing you
 didn't say. The key defaults to Right Command; a tap means press and release within
 0.4 s with no other key held or pressed in between, so Right Command
@@ -157,15 +161,15 @@ models on demand may miss the 15 s on the first cleanup after a pause.
 Rewording runs on a language model, not on the speech server. The
 rewording server is an OpenAI-compatible `/v1` endpoint; it defaults to
 `http://localhost:8400/v1`, and the API key is optional and kept in the
-Keychain. The app asks it for its models and picks one by name:
+Keychain. The app asks it for its models and uses the first with "gemma" in
+its name, else the first with "qwen" (but not "asr"), both for rewording
+selected text and for cleanup.
 
-- Rewording selected text uses the first model with "qwen" (but not "asr")
-  in its name, else the first with "gemma". If that fails for any reason
-  and "Fall back to Claude Haiku" is on (the default), it uses Claude Haiku
-  through the `claude` CLI, which uses your Claude Code login. The app
-  looks for it in `~/.local/bin`, `~/.claude/local`, `/opt/homebrew/bin`
-  and `/usr/local/bin`; Settings says when it can't find it.
-- Cleaning up every dictation uses "gemma" first, else "qwen".
+If rewording selected text fails for any reason and "Fall back to Claude
+Haiku" is on (the default), it uses Claude Haiku through the `claude` CLI,
+which uses your Claude Code login. The app looks for it in `~/.local/bin`,
+`~/.claude/local`, `/opt/homebrew/bin` and `/usr/local/bin`; Settings says
+when it can't find it.
 
 With no usable model, rewording fails with "No rewording model available",
 or with the server's own error, such as a rejected API key.
