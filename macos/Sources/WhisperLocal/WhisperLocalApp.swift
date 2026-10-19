@@ -65,6 +65,9 @@ private struct MenuContent: View {
                     Button(problem.text) { model.openProblemSettings() }
                 }
             }
+            if let screenProblem = model.screenProblem, let url = screenProblem.pane?.url {
+                Button(screenProblem.text) { NSWorkspace.shared.open(url) }
+            }
             if model.micWarm {
                 Button("Stop keeping microphone ready") { model.coolDownMic() }
             }

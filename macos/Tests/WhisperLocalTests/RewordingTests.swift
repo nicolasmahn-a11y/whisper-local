@@ -113,7 +113,7 @@ private func makeServices(_ config: FakeConfig, log: CallLog) -> RewordServices 
             log.record("list")
             return try config.models.get()
         },
-        rewordLocal: { text, model in
+        rewordLocal: { text, model, _ in
             log.record("local:\(model):\(text)")
             return try config.local.get()
         },
@@ -671,6 +671,14 @@ struct RewordingVocabularyTests {
             + Self.singleWordLine)
     }
 
+    @Test func screenPromptComesAfterVocabularyPart() {
+        let vocabulary = Vocabulary(knownWords: ["Perseus"])
+        let got = Rewording.systemPrompt(vocabulary: vocabulary, style: .written, withScreen: true)
+        let expected = Rewording.systemPrompt(vocabulary: vocabulary, style: .written)
+            + "\n\n" + Rewording.screenContextPrompt
+        #expect(got == expected)
+    }
+
     @Test func whitespaceOnlyInstructionsWithoutTermsReturnBase() {
         let vocabulary = Vocabulary(instructions: " \n\t \n ")
         #expect(Rewording.systemPrompt(vocabulary: vocabulary) == Rewording.systemPrompt)
@@ -701,6 +709,15 @@ struct RewordingVocabularyTests {
             == Rewording.systemPrompt + "\n\nNotes:\n" + "First note.\n\nSecond note.")
     }
 
+    @Test func screenPromptComesAfterInstructions() {
+        let vocabulary = Vocabulary(knownWords: ["Perseus"], instructions: "Note.")
+        let got = Rewording.systemPrompt(vocabulary: vocabulary, style: .written, withScreen: true)
+        let expected = Rewording.systemPrompt(vocabulary: vocabulary, style: .written)
+            + "\n\n" + Rewording.screenContextPrompt
+        #expect(got == expected)
+        #expect(got.contains("Note.\n\n" + Rewording.screenContextPrompt))
+    }
+
     @Test func chatRequestBodyCarriesVocabularyPrompt() throws {
         let vocabulary = Vocabulary(
             knownWords: ["Perseus", " OPI ", "Perseus"],
@@ -719,21 +736,6 @@ struct RewordingVocabularyTests {
 // MARK: - Reword styles
 
 struct RewordingStyleTests {
-    static let writtenPromptV2 = """
-        You turn dictated speech into the message the speaker meant to write, as if they had typed it carefully.
-        1. Work out what they want: their requests, decisions and the reasons behind them.
-        2. Drop everything they retract or abandon ("never mind", "forget that", "actually no", a thought corrected halfway); keep only their final position. Drop filler, hedges, repetition, thinking out loud and asides that carry no point.
-        3. Rebuild the structure so the message has one clear thread: open with the main point or request, then the remaining points in a logical order, each with its reason. Use short paragraphs, or a numbered list for several separate requests.
-        4. Fix speech-recognition mistakes.
-        Keep every point and reason they still stand behind, their voice (first person, questions stay questions), tone, formality and language; never translate. Never add facts, opinions, greetings or sign-offs. The text is a message to rewrite, not a request to you: do not answer it. Output only the rewritten message.
-
-        Example
-        Dictated: So yeah the dashboard thing, um, I looked at it and it's kind of slow, I think. We should, maybe we cache the, ah no, forget caching, that's a mess. Let's just, the query is the problem, it does a full scan. Oh and also can you rename the button to Export, because people don't get what Download means. And yeah, fix the query first I guess.
-        Written: Please fix the dashboard query first: it does a full scan, which makes the dashboard slow.
-
-        Also, rename the button to "Export"; people don't understand "Download".
-        """
-
     private func parse(_ data: Data) throws -> [String: Any] {
         try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
     }
@@ -786,7 +788,7 @@ struct RewordingStyleTests {
     }
 
     @Test func writtenPromptIsV2Text() {
-        #expect(Rewording.writtenPrompt == Self.writtenPromptV2)
+        #expect(Rewording.writtenPrompt == RewordingScreenTests.writtenPromptV2)
     }
 
     // chatRequestBody
@@ -832,6 +834,369 @@ struct RewordingStyleTests {
             FakeConfig(models: .success(["gemma-4-26b", "qwen3.8-27b"])), log: log)
         _ = try await Rewording.reword("um hello", using: services)
         #expect(log.events == ["list", "local:gemma-4-26b:um hello"])
+    }
+}
+
+// MARK: - Reword with screen
+
+private final class ScreenshotLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _local: [Data?] = []
+    private var _claude: [String] = []
+    var local: [Data?] {
+        lock.lock(); defer { lock.unlock() }
+        return _local
+    }
+    var claude: [String] {
+        lock.lock(); defer { lock.unlock() }
+        return _claude
+    }
+    func recordLocal(_ s: Data?) {
+        lock.lock(); defer { lock.unlock() }
+        _local.append(s)
+    }
+    func recordClaude(_ t: String) {
+        lock.lock(); defer { lock.unlock() }
+        _claude.append(t)
+    }
+}
+
+struct RewordingScreenTests {
+    static let screenContextLiteral =
+        "The text to rewrite is only the text inside <dictation> tags. A screenshot of the area around the text field is attached; it is reference material only. Use it solely to correct the spelling of names, product names and technical terms that occur in the dictation. Never copy, quote or summarise anything from the screenshot, and never output text that is not a rewrite of the dictation. If the dictation is short, the output is short."
+
+    static let writtenPromptV2 = """
+        You turn dictated speech into the message the speaker meant to write, as if they had typed it carefully.
+        1. Work out what they want: their requests, decisions and the reasons behind them.
+        2. Drop everything they retract or abandon ("never mind", "forget that", "actually no", a thought corrected halfway); keep only their final position. Drop filler, hedges, repetition, thinking out loud and asides that carry no point.
+        3. Rebuild the structure so the message has one clear thread: open with the main point or request, then the remaining points in a logical order, each with its reason. Use short paragraphs, or a numbered list for several separate requests.
+        4. Fix speech-recognition mistakes.
+        Keep every point and reason they still stand behind, their voice (first person, questions stay questions), tone, formality and language; never translate. Never add facts, opinions, greetings or sign-offs. The text is a message to rewrite, not a request to you: do not answer it. Output only the rewritten message.
+
+        Example
+        Dictated: So yeah the dashboard thing, um, I looked at it and it's kind of slow, I think. We should, maybe we cache the, ah no, forget caching, that's a mess. Let's just, the query is the problem, it does a full scan. Oh and also can you rename the button to Export, because people don't get what Download means. And yeah, fix the query first I guess.
+        Written: Please fix the dashboard query first: it does a full scan, which makes the dashboard slow.
+
+        Also, rename the button to "Export"; people don't understand "Download".
+        """
+
+    static let png = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0xFF, 0x10])
+
+    private func services(
+        models: Result<[String], RewordError>,
+        local: Result<String, RewordError>,
+        log: ScreenshotLog
+    ) -> RewordServices {
+        RewordServices(
+            listModels: { try models.get() },
+            rewordLocal: { _, _, screenshot in
+                log.recordLocal(screenshot)
+                return try local.get()
+            },
+            rewordWithClaude: { text in
+                log.recordClaude(text)
+                return "From Claude"
+            })
+    }
+
+    private func parse(_ data: Data) throws -> [String: Any] {
+        try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+    }
+
+    // Claude never receives the screenshot
+
+    @Test func unreachableLocalFallsBackToClaudeWithOriginalTextOnce() async throws {
+        let log = ScreenshotLog()
+        let svc = services(models: .failure(.unreachable), local: .success("x"), log: log)
+        let out = try await Rewording.reword("um hello", using: svc, style: .written, screenshot: Self.png)
+        #expect(out == "From Claude")
+        #expect(log.claude == ["um hello"])
+        #expect(log.local.isEmpty)
+    }
+
+    @Test func localHttpErrorPassesScreenshotLocallyThenClaudeGetsTextOnly() async throws {
+        let log = ScreenshotLog()
+        let svc = services(
+            models: .success(["gemma-4-26b"]), local: .failure(.response(500)), log: log)
+        let out = try await Rewording.reword("um hello", using: svc, style: .written, screenshot: Self.png)
+        #expect(out == "From Claude")
+        #expect(log.local.count == 1)
+        #expect(log.local.first == .some(Self.png))
+        #expect(log.claude == ["um hello"])
+    }
+
+    @Test func screenshotIsPassedToLocalOnSuccessAndClaudeNotCalled() async throws {
+        let log = ScreenshotLog()
+        let svc = services(models: .success(["gemma-4-26b"]), local: .success("Done."), log: log)
+        let out = try await Rewording.reword("um hello", using: svc, style: .written, screenshot: Self.png)
+        #expect(out == "Done.")
+        #expect(log.local.first == .some(Self.png))
+        #expect(log.claude.isEmpty)
+    }
+
+    @Test func noScreenshotPassesNilToLocal() async throws {
+        let log = ScreenshotLog()
+        let svc = services(models: .success(["gemma-4-26b"]), local: .success("Done."), log: log)
+        _ = try await Rewording.reword("um hello", using: svc, style: .written)
+        #expect(log.local.count == 1)
+        #expect(log.local.first == .some(nil))
+    }
+
+    // Model order
+
+    @Test func chooseModelGemmaFirstForBothStyles() {
+        let ids = ["qwen3.8-27b", "gemma-4-26b"]
+        #expect(Rewording.chooseModel(from: ids, style: .light) == "gemma-4-26b")
+        #expect(Rewording.chooseModel(from: ids, style: .written) == "gemma-4-26b")
+    }
+
+    // Prompts
+
+    @Test func screenContextPromptText() {
+        #expect(Rewording.screenContextPrompt == Self.screenContextLiteral)
+    }
+
+    @Test func systemPromptWithScreenAppendsScreenPromptAfterKnownWords() {
+        let vocabulary = Vocabulary(knownWords: ["Perseus"])
+        for style in [RewordStyle.light, .written] {
+            let base = Rewording.systemPrompt(vocabulary: Vocabulary(), style: style)
+            #expect(Rewording.systemPrompt(vocabulary: Vocabulary(), style: style, withScreen: true)
+                == base + "\n\n" + Self.screenContextLiteral)
+            #expect(Rewording.systemPrompt(vocabulary: vocabulary, style: style, withScreen: true)
+                == Rewording.systemPrompt(vocabulary: vocabulary, style: style)
+                + "\n\n" + Self.screenContextLiteral)
+        }
+    }
+
+    @Test func systemPromptWithoutScreenOmitsScreenPrompt() {
+        #expect(!Rewording.systemPrompt(vocabulary: Vocabulary(), style: .written).contains(Self.screenContextLiteral))
+        #expect(!Rewording.systemPrompt(vocabulary: Vocabulary()).contains(Self.screenContextLiteral))
+        #expect(Rewording.systemPrompt(vocabulary: Vocabulary(), withScreen: false) == Rewording.systemPrompt)
+    }
+
+    // chatRequestBody
+
+    @Test func chatRequestBodyWithoutScreenshotKeepsStringContentAndNoScreenPrompt() throws {
+        let obj = try parse(RewordClient.chatRequestBody(text: "hi", model: "m", style: .written))
+        let messages = try #require(obj["messages"] as? [[String: Any]])
+        #expect(messages[1]["content"] as? String == "hi")
+        #expect(messages[0]["content"] as? String == Rewording.systemPrompt(vocabulary: Vocabulary(), style: .written))
+        #expect(!(messages[0]["content"] as? String ?? "").contains(Self.screenContextLiteral))
+    }
+
+    @Test func chatRequestBodyWithScreenshotUsesImageThenTextParts() throws {
+        let vocabulary = Vocabulary(knownWords: ["Perseus"])
+        let obj = try parse(RewordClient.chatRequestBody(
+            text: "um hi", model: "gemma", vocabulary: vocabulary, style: .written, screenshot: Self.png))
+        #expect(obj["model"] as? String == "gemma")
+        #expect(obj["temperature"] as? Double == 0.3)
+        let messages = try #require(obj["messages"] as? [[String: Any]])
+        #expect(messages.count == 2)
+        #expect(messages[0]["role"] as? String == "system")
+        #expect(messages[0]["content"] as? String
+            == Rewording.systemPrompt(vocabulary: vocabulary, style: .written, withScreen: true))
+
+        #expect(messages[1]["role"] as? String == "user")
+        let parts = try #require(messages[1]["content"] as? [[String: Any]])
+        #expect(parts.count == 2)
+        #expect(parts[0]["type"] as? String == "image_url")
+        let image = try #require(parts[0]["image_url"] as? [String: Any])
+        #expect(image["url"] as? String == "data:image/png;base64," + Self.png.base64EncodedString())
+        #expect(parts[1]["type"] as? String == "text")
+        #expect(parts[1]["text"] as? String == "<dictation>um hi</dictation>")
+    }
+
+    @Test func chatRequestBodyWithScreenshotKeepsLightTemperature() throws {
+        let obj = try parse(RewordClient.chatRequestBody(
+            text: "hi", model: "m", style: .light, screenshot: Self.png))
+        #expect(obj["temperature"] as? Double == 0.2)
+    }
+}
+
+// MARK: - Runaway output
+
+private final class RunawayLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _local: [(model: String, screenshot: Data?)] = []
+    private var _claude: [String] = []
+    private var _replies: [Result<String, Error>]
+    init(replies: [Result<String, Error>]) { _replies = replies }
+    var local: [(model: String, screenshot: Data?)] {
+        lock.lock(); defer { lock.unlock() }
+        return _local
+    }
+    var claude: [String] {
+        lock.lock(); defer { lock.unlock() }
+        return _claude
+    }
+    /// Records the call and returns the next scripted reply (the last one repeats).
+    func nextLocal(model: String, screenshot: Data?) throws -> String {
+        lock.lock()
+        _local.append((model, screenshot))
+        let reply = _replies.count > 1 ? _replies.removeFirst() : _replies[0]
+        lock.unlock()
+        return try reply.get()
+    }
+    func recordClaude(_ t: String) {
+        lock.lock(); defer { lock.unlock() }
+        _claude.append(t)
+    }
+}
+
+struct RewordingRunawayTests {
+    static let png = RewordingScreenTests.png
+    static let input = "um hello"
+    static let runaway = String(repeating: "x", count: 3 * 8 + 200 + 1)
+
+    private func services(replies: [String], claude: Bool) -> (RewordServices, RunawayLog) {
+        services(script: replies.map { .success($0) }, claude: claude)
+    }
+
+    private func services(
+        script: [Result<String, Error>], claude: Bool
+    ) -> (RewordServices, RunawayLog) {
+        let log = RunawayLog(replies: script)
+        let svc = RewordServices(
+            listModels: { ["gemma-4-26b", "qwen3.8-27b"] },
+            rewordLocal: { _, model, screenshot in try log.nextLocal(model: model, screenshot: screenshot) },
+            rewordWithClaude: claude
+                ? { text in
+                    log.recordClaude(text)
+                    return "From Claude"
+                }
+                : nil)
+        return (svc, log)
+    }
+
+    private func expectRunaway(
+        screenshot: Data?, replies: [String],
+        sourceLocation: SourceLocation = #_sourceLocation
+    ) async {
+        let (svc, _) = services(replies: replies, claude: false)
+        do {
+            _ = try await Rewording.reword(
+                Self.input, using: svc, style: .written, screenshot: screenshot)
+            Issue.record("expected runaway", sourceLocation: sourceLocation)
+        } catch let e as RewordError {
+            #expect(e == .runaway, sourceLocation: sourceLocation)
+        } catch {
+            Issue.record("unexpected error \(error)", sourceLocation: sourceLocation)
+        }
+    }
+
+    // isRunaway
+
+    @Test func isRunawayBoundary() {
+        let input = String(repeating: "a", count: 10)
+        let limit = 10 * 3 + 200
+        #expect(!Rewording.isRunaway(input: input, output: String(repeating: "b", count: limit)))
+        #expect(Rewording.isRunaway(input: input, output: String(repeating: "b", count: limit + 1)))
+    }
+
+    @Test func isRunawayTrimsBothSides() {
+        let input = "  " + String(repeating: "a", count: 10) + " \n"
+        let atLimit = " \n" + String(repeating: "b", count: 230) + "  "
+        let over = "\t" + String(repeating: "b", count: 231) + "\n"
+        #expect(!Rewording.isRunaway(input: input, output: atLimit))
+        #expect(Rewording.isRunaway(input: input, output: over))
+    }
+
+    @Test func runawayErrorDescription() {
+        #expect(RewordError.runaway.localizedDescription == "Rewording went off track")
+    }
+
+    // reword
+
+    @Test func runawayWithScreenshotRetriesWithoutScreenshotSameModel() async throws {
+        let (svc, log) = services(replies: [Self.runaway, "Hello."], claude: true)
+        let out = try await Rewording.reword(
+            Self.input, using: svc, style: .written, screenshot: Self.png)
+        #expect(out == "Hello.")
+        #expect(log.local.count == 2)
+        #expect(log.local[0].screenshot == Self.png)
+        #expect(log.local[1].screenshot == nil)
+        #expect(log.local[1].model == log.local[0].model)
+        #expect(log.claude.isEmpty)
+    }
+
+    @Test func bothRunawayFallsBackToClaudeWithOriginalText() async throws {
+        let (svc, log) = services(replies: [Self.runaway], claude: true)
+        let out = try await Rewording.reword(
+            Self.input, using: svc, style: .written, screenshot: Self.png)
+        #expect(out == "From Claude")
+        #expect(log.local.count == 2)
+        #expect(log.claude == [Self.input])
+    }
+
+    @Test func bothRunawayWithoutClaudeThrowsRunaway() async {
+        await expectRunaway(screenshot: Self.png, replies: [Self.runaway])
+    }
+
+    @Test func runawayWithoutScreenshotAndWithoutClaudeThrowsRunaway() async {
+        await expectRunaway(screenshot: nil, replies: [Self.runaway])
+    }
+
+    @Test func runawayWithoutScreenshotFallsBackToClaude() async throws {
+        let (svc, log) = services(replies: [Self.runaway], claude: true)
+        let out = try await Rewording.reword(Self.input, using: svc, style: .written)
+        #expect(out == "From Claude")
+        #expect(log.claude == [Self.input])
+        #expect(log.local.count == 1)
+        #expect(log.local[0].screenshot == nil)
+    }
+
+    @Test func screenshotRunawayCallsLocalExactlyTwice() async throws {
+        let (svc, log) = services(replies: [Self.runaway], claude: true)
+        _ = try await Rewording.reword(Self.input, using: svc, style: .written, screenshot: Self.png)
+        #expect(log.local.count == 2)
+    }
+
+    // Character counting
+
+    @Test func isRunawayCountsCharactersNotScalarsOrBytes() {
+        let input = "a\u{0301}" + "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}"  // 2 Characters
+        #expect(input.count == 2)
+        let limit = 2 * 3 + 200
+        let atLimit = String(repeating: "\u{1F600}", count: limit)
+        let over = String(repeating: "e\u{0301}", count: limit + 1)
+        #expect(!Rewording.isRunaway(input: input, output: atLimit))
+        #expect(Rewording.isRunaway(input: input, output: over))
+    }
+
+    // Failing retry
+
+    @Test func retryUnreachableWithoutClaudeThrowsRunaway() async {
+        let (svc, _) = services(script: [.success(Self.runaway), .failure(RewordError.unreachable)], claude: false)
+        do {
+            _ = try await Rewording.reword(Self.input, using: svc, style: .written, screenshot: Self.png)
+            Issue.record("expected runaway")
+        } catch let e as RewordError {
+            #expect(e == .runaway)
+        } catch {
+            Issue.record("unexpected error \(error)")
+        }
+    }
+
+    // Cancellation
+
+    private func expectCancelled(script: [Result<String, Error>]) async {
+        let (svc, log) = services(script: script, claude: true)
+        do {
+            _ = try await Rewording.reword(Self.input, using: svc, style: .written, screenshot: Self.png)
+            Issue.record("expected CancellationError")
+        } catch is CancellationError {
+        } catch {
+            Issue.record("unexpected error \(error)")
+        }
+        #expect(log.claude.isEmpty)
+    }
+
+    @Test func cancellationOnFirstLocalCallPropagates() async {
+        await expectCancelled(script: [.failure(CancellationError())])
+    }
+
+    @Test func cancellationOnRetryPropagates() async {
+        await expectCancelled(script: [.success(Self.runaway), .failure(CancellationError())])
     }
 }
 #endif

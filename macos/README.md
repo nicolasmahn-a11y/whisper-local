@@ -24,7 +24,8 @@ close it.
 
 Tests are split by framework: `KnownWordsTests`, `RecordingCacheTests`,
 `ReplacementsTests`, `RewordingTests`, `RewordKeyTests`,
-`TranscriptionClientTests` and `WarmMicTests` are guarded by
+`ScreenContextTests`, `TranscriptionClientTests` and `WarmMicTests` are
+guarded by
 `#if canImport(Testing)` (Swift Testing, needing Swift 6 / Xcode 16+);
 `DictationTests`, `EncodingTests` and `HotkeyTests` are guarded by
 `#if canImport(XCTest)` and need full Xcode. On a Command Line Tools-only
@@ -36,7 +37,8 @@ framework is on the default search path. Run it as:
 
 to put Swift Testing on the search path; that runs `KnownWordsTests`,
 `RecordingCacheTests`, `ReplacementsTests`, `RewordingTests`,
-`RewordKeyTests`, `TranscriptionClientTests` and `WarmMicTests`.
+`RewordKeyTests`, `ScreenContextTests`, `TranscriptionClientTests` and
+`WarmMicTests`.
 `DictationTests` and `EncodingTests` also run under `./check-on-linux.sh` (see
 below), as does `RecordingCacheTests`; `HotkeyTests` needs full Xcode either
 way.
@@ -46,7 +48,10 @@ way.
 Allow Input Monitoring (to see the dictation key), Accessibility (to paste),
 Microphone, and Local Network access (to reach a server on your network) when
 macOS asks. If one is missing, the menu says so; click that line to open the
-right page of System Settings.
+right page of System Settings. Screen Recording is asked for the first time
+a screenshot goes with rewording (see [Screenshots](#screenshots)); macOS
+applies it only after the app is quit and reopened, and on macOS 15 and
+later it asks now and then whether the app may keep recording the screen.
 
 macOS ties these permissions to the app's signature.
 `./make-signing-cert.sh` creates a self-signed code-signing identity,
@@ -89,8 +94,9 @@ free-form notes for the rewording model, like "Acme Cloud is one product name;
 never split it."
 
 Rewording has the reword key and whether to reword the whole field when
-nothing is selected, "Clean up every dictation", and the Model server: its
-URL, API key and Claude fallback; see below.
+nothing is selected, "Clean up every dictation", the two screenshot
+toggles, and the Model server: its URL, API key and Claude fallback; see
+below.
 
 The menu keeps the last five transcripts in memory; click one to copy it.
 
@@ -163,6 +169,32 @@ It uses only the rewording server, never Claude, and gives up after 15 s
 5 s more); if the cleanup fails, or the transcript is longer than 6000
 characters, the raw transcript is pasted instead. A server that loads
 models on demand may miss the 15 s on the first cleanup after a pause.
+
+### Screenshots
+
+What you dictate is often a reply to something on screen, where the names
+and terms in it are spelled out. So the rewording model can also see a
+screenshot, and spell them as they appear there; it is told never to add
+points from it. "Send screenshot with reword" and "Send screenshot with
+cleanup" in Settings → Rewording, both on by default, decide this for the
+reword key and for "Clean up every dictation".
+
+The screenshot covers about 1280×800 points around the text field you are
+typing in, centred on it and reaching up from just below it, or around the
+front window when macOS doesn't say where the field is. The pill is left
+out. The reword key takes it before copying the text; a dictation takes it
+when the recording stops, while the field you dictate into still has focus.
+Retried recordings and the Services menu send none. Each screenshot adds
+about a second.
+
+It needs Screen Recording permission. While it is missing and a screenshot
+toggle is on, the menu says so (click the line to open System Settings) and
+rewording goes on without the screen. If a capture fails, the text is
+reworded without it and the pill says "Reworded without screen — screen
+capture failed".
+Screenshots stay in memory, are never written to disk, and go only to the
+rewording server: when the Claude fallback steps in, Claude gets the text
+alone.
 
 ### Models
 

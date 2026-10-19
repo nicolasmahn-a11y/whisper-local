@@ -11,6 +11,7 @@ enum RewordError: LocalizedError, Equatable {
     case emptyResult
     case claudeFailed
     case tooLong
+    case runaway
 
     var errorDescription: String? {
         switch self {
@@ -24,6 +25,7 @@ enum RewordError: LocalizedError, Equatable {
         case .emptyResult: "Rewording returned no text"
         case .claudeFailed: "Claude rewording failed"
         case .tooLong: "Too much text to reword"
+        case .runaway: "Rewording went off track"
         }
     }
 }
@@ -41,8 +43,8 @@ struct Vocabulary: Equatable {
 
 struct RewordServices {
     var listModels: () async throws -> [String]
-    var rewordLocal: (_ text: String, _ model: String) async throws -> String
-    /// nil when the Claude fallback is disabled or the CLI is missing.
+    var rewordLocal: (_ text: String, _ model: String, _ screenshot: Data?) async throws -> String
+    /// nil when the Claude fallback is disabled or the CLI is missing. Text only: screenshots stay local.
     var rewordWithClaude: ((_ text: String) async throws -> String)?
 }
 
@@ -73,8 +75,19 @@ enum Rewording {
         Also, rename the button to "Export"; people don't understand "Download".
         """
 
-    static func systemPrompt(vocabulary: Vocabulary, style: RewordStyle = .light) -> String {
-        (style == .light ? systemPrompt : writtenPrompt) + vocabularySuffix(vocabulary, style: style)
+    static let screenContextPrompt = """
+        The text to rewrite is only the text inside <dictation> tags. A screenshot of the area around the text \
+        field is attached; it is reference material only. Use it solely to correct the spelling of names, \
+        product names and technical terms that occur in the dictation. Never copy, quote or summarise anything \
+        from the screenshot, and never output text that is not a rewrite of the dictation. If the dictation is \
+        short, the output is short.
+        """
+
+    static func systemPrompt(
+        vocabulary: Vocabulary, style: RewordStyle = .light, withScreen: Bool = false
+    ) -> String {
+        let base = (style == .light ? systemPrompt : writtenPrompt) + vocabularySuffix(vocabulary, style: style)
+        return withScreen ? base + "\n\n" + screenContextPrompt : base
     }
 
     private static func vocabularySuffix(_ vocabulary: Vocabulary, style: RewordStyle) -> String {
@@ -135,7 +148,7 @@ enum Rewording {
     }
 
     static func reword(
-        _ text: String, using services: RewordServices, style: RewordStyle = .light
+        _ text: String, using services: RewordServices, style: RewordStyle = .light, screenshot: Data? = nil
     ) async throws -> String {
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw RewordError.nothingSelected
@@ -146,17 +159,38 @@ enum Rewording {
             guard let model = chooseModel(from: try await services.listModels(), style: style) else {
                 throw RewordError.noModel
             }
-            return try finish(text, try await services.rewordLocal(text, model))
+            var output = clean(try await services.rewordLocal(text, model, screenshot))
+            // Models sometimes copy the screenshot instead of rewriting; retry once without it.
+            if screenshot != nil, isRunaway(input: text, output: output) {
+                try Task.checkCancellation()
+                do {
+                    output = clean(try await services.rewordLocal(text, model, nil))
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    throw RewordError.runaway
+                }
+            }
+            guard !isRunaway(input: text, output: output) else { throw RewordError.runaway }
+            return try finish(text, output)
         } catch is CancellationError {
             throw CancellationError()
         } catch {
             localError = error
         }
+        try Task.checkCancellation()
         if let claude = services.rewordWithClaude {
             return try finish(text, try await claude(text))
         }
         if let known = localError as? RewordError, known != .unreachable, known != .noModel { throw known }
         throw RewordError.noModel
+    }
+
+    /// Implausibly long for a rewrite of `input`.
+    static func isRunaway(input: String, output: String) -> Bool {
+        let input = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        let output = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        return output.count > input.count * 3 + 200
     }
 
     private static func finish(_ original: String, _ output: String) throws -> String {

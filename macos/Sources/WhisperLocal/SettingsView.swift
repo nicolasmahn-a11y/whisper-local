@@ -143,6 +143,14 @@ private struct RewordingPane: View {
                 Text("Light cleanup by the model server. Adds a few seconds; the raw transcript is pasted if cleanup fails.")
             }
             Section {
+                Toggle("Send screenshot with reword", isOn: $model.rewordScreenshot)
+                Toggle("Send screenshot with cleanup", isOn: $model.cleanupScreenshot)
+            } header: {
+                Text("Screenshots")
+            } footer: {
+                Text("Shows the model the area around the text field, so names on screen come out right. Screenshots go only to the model server, never to Claude, and add about a second.")
+            }
+            Section {
                 TextField("Server URL", text: $model.rewordServerURL, prompt: Text("http://localhost:8400/v1"))
                 SecureField("API key", text: Binding(
                     get: { model.rewordAPIKey },

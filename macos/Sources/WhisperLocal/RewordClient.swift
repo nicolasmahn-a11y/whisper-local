@@ -16,13 +16,16 @@ struct RewordClient {
 
     func reword(
         _ text: String, model: String, serverURL: String, apiKey: String,
-        vocabulary: Vocabulary = Vocabulary(), style: RewordStyle = .light, timeout: TimeInterval = 60
+        vocabulary: Vocabulary = Vocabulary(), style: RewordStyle = .light, timeout: TimeInterval = 60,
+        screenshot: Data? = nil
     ) async throws -> String {
         var request = URLRequest(url: try endpoint(serverURL, "chat/completions"))
         request.httpMethod = "POST"
         request.timeoutInterval = timeout
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = Self.chatRequestBody(text: text, model: model, vocabulary: vocabulary, style: style)
+        request.httpBody = Self.chatRequestBody(
+            text: text, model: model, vocabulary: vocabulary, style: style, screenshot: screenshot
+        )
         let data = try await send(request, apiKey: apiKey)
         guard let completion = try? JSONDecoder().decode(Completion.self, from: data),
               let content = completion.choices.first?.message.content else { throw RewordError.invalidJSON }
@@ -30,13 +33,21 @@ struct RewordClient {
     }
 
     static func chatRequestBody(
-        text: String, model: String, vocabulary: Vocabulary = Vocabulary(), style: RewordStyle = .light
+        text: String, model: String, vocabulary: Vocabulary = Vocabulary(), style: RewordStyle = .light,
+        screenshot: Data? = nil
     ) -> Data {
+        let system = Rewording.systemPrompt(vocabulary: vocabulary, style: style, withScreen: screenshot != nil)
+        let user: Content = screenshot.map {
+            .parts([
+                Part(type: "image_url", imageURL: ImageURL(url: "data:image/png;base64," + $0.base64EncodedString())),
+                Part(type: "text", text: "<dictation>" + text + "</dictation>"),
+            ])
+        } ?? .text(text)
         let request = ChatRequest(
             model: model,
             messages: [
-                Message(role: "system", content: Rewording.systemPrompt(vocabulary: vocabulary, style: style)),
-                Message(role: "user", content: text),
+                Message(role: "system", content: .text(system)),
+                Message(role: "user", content: user),
             ],
             temperature: style == .light ? 0.2 : 0.3,
             chatTemplateKwargs: TemplateOptions(enableThinking: false)
@@ -82,8 +93,34 @@ struct RewordClient {
 
     private struct Message: Encodable {
         let role: String
-        let content: String
+        let content: Content
     }
+
+    private enum Content: Encodable {
+        case text(String)
+        case parts([Part])
+
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.singleValueContainer()
+            switch self {
+            case .text(let text): try container.encode(text)
+            case .parts(let parts): try container.encode(parts)
+            }
+        }
+    }
+
+    private struct Part: Encodable {
+        let type: String
+        var text: String?
+        var imageURL: ImageURL?
+
+        enum CodingKeys: String, CodingKey {
+            case type, text
+            case imageURL = "image_url"
+        }
+    }
+
+    private struct ImageURL: Encodable { let url: String }
 
     private struct TemplateOptions: Encodable {
         let enableThinking: Bool

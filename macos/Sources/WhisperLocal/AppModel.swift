@@ -9,6 +9,7 @@ enum SettingsPane: Equatable {
     case inputMonitoring
     case accessibility
     case microphone
+    case screenRecording
 
     var url: URL? {
         let anchor: String
@@ -16,6 +17,7 @@ enum SettingsPane: Equatable {
         case .inputMonitoring: anchor = "Privacy_ListenEvent"
         case .accessibility: anchor = "Privacy_Accessibility"
         case .microphone: anchor = "Privacy_Microphone"
+        case .screenRecording: anchor = "Privacy_ScreenCapture"
         }
         return URL(string: "x-apple.systempreferences:com.apple.preference.security?\(anchor)")
     }
@@ -85,6 +87,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var recentTranscripts: [String] = []
     @Published private(set) var unsentRecordings: [CachedRecording] = []
     @Published private(set) var problem: Problem? = nil
+    /// Separate from `problem`: screenshots are optional, so dictation and the menu bar icon stay normal.
+    @Published private(set) var screenProblem: Problem? = nil
     @Published private(set) var serverReachable: Bool? = nil
     @Published private(set) var launchAtLogin: Bool
 
@@ -151,6 +155,18 @@ final class AppModel: ObservableObject {
             rewordModels.removeAll()
         }
     }
+    @Published var rewordScreenshot: Bool {
+        didSet {
+            defaults.set(rewordScreenshot, forKey: "rewordScreenshot")
+            refreshScreenProblem()
+        }
+    }
+    @Published var cleanupScreenshot: Bool {
+        didSet {
+            defaults.set(cleanupScreenshot, forKey: "cleanupScreenshot")
+            refreshScreenProblem()
+        }
+    }
     @Published var rewordWholeField: Bool {
         didSet { defaults.set(rewordWholeField, forKey: "rewordWholeField") }
     }
@@ -191,6 +207,9 @@ final class AppModel: ObservableObject {
     private var lastLevelAt: TimeInterval?
     private var started = false
     private var refreshTask: Task<Void, Never>?
+    private typealias ScreenTask = Task<Result<Data, ScreenCapture.Failure>, Never>
+    /// One entry per finished recording, in job order; nil when no screenshot is taken.
+    private var jobScreens: [ScreenTask?] = []
     private var lastRecordingEnded: TimeInterval?
     private var coolDownTask: Task<Void, Never>?
 
@@ -199,7 +218,9 @@ final class AppModel: ObservableObject {
             startRecording: { [recorder] in try recorder.start() },
             stopRecording: { [weak self, recorder] in
                 defer { self?.recordingEnded() }
-                return try recorder.stop(keepWarm: self?.keepsMicWarm ?? false)
+                let wav = try recorder.stop(keepWarm: self?.keepsMicWarm ?? false)
+                self?.queueCleanupScreen()
+                return wav
             },
             cancelRecording: { [weak self, recorder] in
                 recorder.cancel(keepWarm: self?.keepsMicWarm ?? false)
@@ -207,7 +228,8 @@ final class AppModel: ObservableObject {
             },
             transcribe: { [weak self] wav in
                 guard let self else { throw CancellationError() }
-                return try await self.transcribeKeepingAudio(wav)
+                let screen = self.jobScreens.isEmpty ? nil : self.jobScreens.removeFirst()
+                return try await self.transcribeKeepingAudio(wav, screen: screen)
             },
             paste: { text in try KeyboardPaste.paste(text) },
             cue: { [weak self] cue in self?.play(cue) },
@@ -244,6 +266,8 @@ final class AppModel: ObservableObject {
         apiKey = Keychain.apiKey() ?? ""
         rewordServerURL = stored.string(forKey: "rewordServerURL") ?? "http://localhost:8400/v1"
         rewordWholeField = stored.object(forKey: "rewordWholeField") as? Bool ?? true
+        rewordScreenshot = stored.object(forKey: "rewordScreenshot") as? Bool ?? true
+        cleanupScreenshot = stored.object(forKey: "cleanupScreenshot") as? Bool ?? true
         autoReword = stored.object(forKey: "autoReword") as? Bool ?? false
         rewordClaudeFallback = stored.object(forKey: "rewordClaudeFallback") as? Bool ?? true
         rewordAPIKey = Keychain.value(for: "rewordAPIKey") ?? ""
@@ -303,7 +327,7 @@ final class AppModel: ObservableObject {
             return false
         }
         do {
-            let text = try await send(wav)
+            let text = try await send(wav, screen: nil)
             cache.remove(recording)
             refreshRecordings()
             if text.isEmpty {
@@ -327,7 +351,7 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func transcribeKeepingAudio(_ wav: Data) async throws -> String {
+    private func transcribeKeepingAudio(_ wav: Data, screen: ScreenTask?) async throws -> String {
         let saved = try? cache.save(wav)
         if let saved { uploadingIDs.insert(saved.id) }
         defer {
@@ -335,7 +359,7 @@ final class AppModel: ObservableObject {
             refreshRecordings()
         }
         do {
-            let text = try await send(wav)
+            let text = try await send(wav, screen: screen)
             if let saved { cache.remove(saved) }
             return text
         } catch {
@@ -347,7 +371,12 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func send(_ wav: Data) async throws -> String {
+    /// Taken when a dictation finishes, while its target field still has focus, for that job's cleanup.
+    private func queueCleanupScreen() {
+        jobScreens.append(autoReword && cleanupScreenshot ? Task { await ScreenCapture.focusedArea() } : nil)
+    }
+
+    private func send(_ wav: Data, screen: ScreenTask?) async throws -> String {
         let text = try await client.transcribe(
             wav: wav, serverURL: serverURL, apiKey: apiKey,
             language: language, knownWords: knownWords
@@ -355,10 +384,13 @@ final class AppModel: ObservableObject {
         let replaced = Replacements.apply(Replacements.rules(from: replacements), to: text)
         guard autoReword, !replaced.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               replaced.count <= Rewording.maxCharacters else { return replaced }
+        let shot = await screen?.value
         do {
             let cleaned = try await Rewording.reword(
-                replaced, using: rewordServices(style: .light, chatTimeout: 15, claude: false), style: .light
+                replaced, using: rewordServices(style: .light, chatTimeout: 15, claude: false), style: .light,
+                screenshot: try? shot?.get()
             )
+            noteScreenFailure(shot)
             return Replacements.apply(Replacements.rules(from: replacements), to: cleaned)
         } catch {
             // Cleanup is best effort: keep the raw transcript.
@@ -499,6 +531,7 @@ final class AppModel: ObservableObject {
             hotkey?.stop()
             permissionProblem = problem(for: .inputMonitoring)
         }
+        refreshScreenProblem()
         publishProblem()
         dictation.enabled = enabled && permissionProblem == nil
         if !dictation.enabled { coolDownMic() }
@@ -542,10 +575,13 @@ final class AppModel: ObservableObject {
         let clipboard = pasteboard.string(forType: .string)
         let clipboardChange = pasteboard.changeCount
         var selectedAll = false
+        let capture = rewordScreenshot ? Task { await ScreenCapture.focusedArea() } : nil
         do {
             let text = try await copySelection(selectedAll: &selectedAll)
+            let shot = await capture?.value
             let activity = dictationActivity
-            let result = try await reword(text)
+            let result = try await reword(text, screenshot: try? shot?.get())
+            noteScreenFailure(shot)
             // A dictation or another app now owns the focus; don't paste into it.
             if dictationActivity != activity || state != .idle
                 || NSWorkspace.shared.frontmostApplication?.processIdentifier != app {
@@ -581,11 +617,11 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func reword(_ text: String) async throws -> String {
+    private func reword(_ text: String, screenshot: Data? = nil) async throws -> String {
         showsRewording = true
         let result = try await Rewording.reword(
             Replacements.apply(Replacements.rules(from: replacements), to: text),
-            using: rewordServices(style: .written), style: .written
+            using: rewordServices(style: .written), style: .written, screenshot: screenshot
         )
         recentTranscripts = Array(([result] + recentTranscripts).prefix(5))
         return result
@@ -607,11 +643,11 @@ final class AppModel: ObservableObject {
                 cache[serverURL, style] = Rewording.chooseModel(from: ids, style: style)
                 return ids
             },
-            rewordLocal: { text, model in
+            rewordLocal: { text, model, screenshot in
                 do {
                     return try await client.reword(
                         text, model: model, serverURL: serverURL, apiKey: apiKey,
-                        vocabulary: vocabulary, style: style, timeout: chatTimeout
+                        vocabulary: vocabulary, style: style, timeout: chatTimeout, screenshot: screenshot
                     )
                 } catch let error as RewordError where error != .unreachable {
                     cache[serverURL, style] = nil
@@ -656,6 +692,21 @@ final class AppModel: ObservableObject {
               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else { return nil }
         return text
+    }
+
+    /// Missing permission shows as a menu line instead of a notice on every reword.
+    private func noteScreenFailure(_ shot: Result<Data, ScreenCapture.Failure>?) {
+        switch shot {
+        case .failure(.permission)?: refreshScreenProblem()
+        case .failure(.capture)?: show(notice: "Reworded without screen — screen capture failed")
+        default: break
+        }
+    }
+
+    private func refreshScreenProblem() {
+        let needed = (rewordScreenshot || cleanupScreenshot) && !CGPreflightScreenCaptureAccess()
+        screenProblem = needed
+            ? Problem(text: "Screen Recording needed for screenshots", pane: .screenRecording) : nil
     }
 
     private func failReword(_ error: Error) {

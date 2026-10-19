@@ -80,7 +80,8 @@ in normal text fields.
   language model rewrite it as if you had typed it: without what you take
   back, main point first, same voice and language. With nothing selected
   it rewords the whole field. An opt-in setting also lightly cleans up every
-  dictation before pasting it. See
+  dictation before pasting it. A screenshot around the text field goes along
+  by default, so names on screen come out right. See
   [macos/README.md](macos/README.md#rewording).
 
 Opening the microphone takes about 80 ms, which can cut off the first
@@ -125,7 +126,10 @@ apply to the next recording without a restart.
 - On macOS, text you reword goes to the rewording server you configure. If
   that fails and the Claude fallback is on, it goes to Anthropic through the
   `claude` CLI instead. With "Clean up every dictation" on, every transcript
-  also goes to the rewording server, but never to Claude.
+  also goes to the rewording server, but never to Claude. With "Send
+  screenshot with reword" or "Send screenshot with cleanup" on (the
+  default), a screenshot of the area around the text field goes along, to
+  the rewording server only, never to Claude; it is never written to disk.
 - Over plain HTTP on a network, anyone else on that network can read the audio,
   the transcripts and the API key. Use HTTPS, or keep the server on the same
   machine, if that matters to you.
