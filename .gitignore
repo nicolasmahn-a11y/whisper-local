@@ -6,3 +6,12 @@ macos/.build/
 macos/build/
 .DS_Store
 .env
+
+### ai agent config files (managed by trav ai) ###
+.claude/agents/**
+.claude/skills/**
+.claude/scripts/hooks/**
+.claude/CLAUDE.md
+.claude/settings.json
+.claude/settings.local.json
+### end ai agent config files ###
