@@ -131,6 +131,9 @@ final class AppModel: ObservableObject {
     @Published var replacements: [String] {
         didSet { defaults.set(replacements, forKey: "replacements") }
     }
+    @Published var rewordInstructions: String {
+        didSet { defaults.set(rewordInstructions, forKey: "rewordInstructions") }
+    }
     @Published var keepMicReady: Bool {
         didSet {
             defaults.set(keepMicReady, forKey: "keepMicReady")
@@ -235,6 +238,7 @@ final class AppModel: ObservableObject {
         language = stored.string(forKey: "language") ?? ""
         knownWords = stored.stringArray(forKey: "knownWords") ?? []
         replacements = stored.stringArray(forKey: "replacements") ?? []
+        rewordInstructions = stored.string(forKey: "rewordInstructions") ?? ""
         sounds = stored.object(forKey: "sounds") as? Bool ?? true
         keepMicReady = stored.object(forKey: "keepMicReady") as? Bool ?? false
         apiKey = Keychain.apiKey() ?? ""
@@ -579,7 +583,10 @@ final class AppModel: ObservableObject {
 
     private func reword(_ text: String) async throws -> String {
         showsRewording = true
-        let result = try await Rewording.reword(text, using: rewordServices(style: .written), style: .written)
+        let result = try await Rewording.reword(
+            Replacements.apply(Replacements.rules(from: replacements), to: text),
+            using: rewordServices(style: .written), style: .written
+        )
         recentTranscripts = Array(([result] + recentTranscripts).prefix(5))
         return result
     }
@@ -587,7 +594,10 @@ final class AppModel: ObservableObject {
     private func rewordServices(
         style: RewordStyle, chatTimeout: TimeInterval = 60, claude useClaude: Bool = true
     ) -> RewordServices {
-        let client = rewordClient, serverURL = rewordServerURL, apiKey = rewordAPIKey, knownWords = knownWords
+        let client = rewordClient, serverURL = rewordServerURL, apiKey = rewordAPIKey
+        let vocabulary = Vocabulary(
+            knownWords: knownWords, replacements: Replacements.rules(from: replacements),
+            instructions: rewordInstructions)
         let claude = useClaude && rewordClaudeFallback ? ClaudeCLI.locate() : nil
         let cache = rewordModels
         return RewordServices(
@@ -601,7 +611,7 @@ final class AppModel: ObservableObject {
                 do {
                     return try await client.reword(
                         text, model: model, serverURL: serverURL, apiKey: apiKey,
-                        knownWords: knownWords, style: style, timeout: chatTimeout
+                        vocabulary: vocabulary, style: style, timeout: chatTimeout
                     )
                 } catch let error as RewordError where error != .unreachable {
                     cache[serverURL, style] = nil
@@ -609,7 +619,7 @@ final class AppModel: ObservableObject {
                 }
             },
             rewordWithClaude: claude.map { executable in
-                { text in try await ClaudeCLI.reword(text, executable: executable, knownWords: knownWords, style: style) }
+                { text in try await ClaudeCLI.reword(text, executable: executable, vocabulary: vocabulary, style: style) }
             }
         )
     }

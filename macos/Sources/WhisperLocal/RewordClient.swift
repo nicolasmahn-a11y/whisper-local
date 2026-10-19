@@ -16,13 +16,13 @@ struct RewordClient {
 
     func reword(
         _ text: String, model: String, serverURL: String, apiKey: String,
-        knownWords: [String] = [], style: RewordStyle = .light, timeout: TimeInterval = 60
+        vocabulary: Vocabulary = Vocabulary(), style: RewordStyle = .light, timeout: TimeInterval = 60
     ) async throws -> String {
         var request = URLRequest(url: try endpoint(serverURL, "chat/completions"))
         request.httpMethod = "POST"
         request.timeoutInterval = timeout
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = Self.chatRequestBody(text: text, model: model, knownWords: knownWords, style: style)
+        request.httpBody = Self.chatRequestBody(text: text, model: model, vocabulary: vocabulary, style: style)
         let data = try await send(request, apiKey: apiKey)
         guard let completion = try? JSONDecoder().decode(Completion.self, from: data),
               let content = completion.choices.first?.message.content else { throw RewordError.invalidJSON }
@@ -30,12 +30,12 @@ struct RewordClient {
     }
 
     static func chatRequestBody(
-        text: String, model: String, knownWords: [String] = [], style: RewordStyle = .light
+        text: String, model: String, vocabulary: Vocabulary = Vocabulary(), style: RewordStyle = .light
     ) -> Data {
         let request = ChatRequest(
             model: model,
             messages: [
-                Message(role: "system", content: Rewording.systemPrompt(knownWords: knownWords, style: style)),
+                Message(role: "system", content: Rewording.systemPrompt(vocabulary: vocabulary, style: style)),
                 Message(role: "user", content: text),
             ],
             temperature: style == .light ? 0.2 : 0.3,

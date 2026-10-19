@@ -22,12 +22,12 @@ enum ClaudeCLI {
     }
 
     static func reword(
-        _ text: String, executable: URL, knownWords: [String] = [], style: RewordStyle = .light
+        _ text: String, executable: URL, vocabulary: Vocabulary = Vocabulary(), style: RewordStyle = .light
     ) async throws -> String {
         _ = ignoreSIGPIPE
         let process = Process()
         process.executableURL = executable
-        process.arguments = arguments(systemPrompt: Rewording.systemPrompt(knownWords: knownWords, style: style))
+        process.arguments = arguments(systemPrompt: Rewording.systemPrompt(vocabulary: vocabulary, style: style))
         process.currentDirectoryURL = FileManager.default.temporaryDirectory
         process.environment = environment(for: executable)
         let input = Pipe()

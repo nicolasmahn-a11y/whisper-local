@@ -31,6 +31,14 @@ enum RewordError: LocalizedError, Equatable {
 /// `.light` cleans up dictation; `.written` rewrites it as if typed.
 enum RewordStyle: Equatable { case light, written }
 
+/// Terms the speaker uses and how speech recognition mishears them.
+struct Vocabulary: Equatable {
+    var knownWords: [String] = []
+    var replacements: [Replacement] = []
+    /// Free-form notes from the user, sent verbatim.
+    var instructions: String = ""
+}
+
 struct RewordServices {
     var listModels: () async throws -> [String]
     var rewordLocal: (_ text: String, _ model: String) async throws -> String
@@ -65,15 +73,40 @@ enum Rewording {
         Also, rename the button to "Export"; people don't understand "Download".
         """
 
-    static func systemPrompt(knownWords: [String], style: RewordStyle = .light) -> String {
-        let base = style == .light ? systemPrompt : writtenPrompt
+    static func systemPrompt(vocabulary: Vocabulary, style: RewordStyle = .light) -> String {
+        (style == .light ? systemPrompt : writtenPrompt) + vocabularySuffix(vocabulary, style: style)
+    }
+
+    private static func vocabularySuffix(_ vocabulary: Vocabulary, style: RewordStyle) -> String {
         var seen = Set<String>()
-        let words = knownWords
+        let words = vocabulary.knownWords
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty && seen.insert($0).inserted }
-        guard !words.isEmpty else { return base }
-        return base + "\n\nThese names and terms are spelled correctly; keep them exactly as written: "
-            + words.joined(separator: ", ") + "."
+        let terms = !words.isEmpty || !vocabulary.replacements.isEmpty
+        let notes = vocabulary.instructions.trimmingCharacters(in: .whitespacesAndNewlines)
+        // The headings keep the written style's example from absorbing these lines.
+        let notesPart = notes.isEmpty ? "" : "\n\nNotes:\n" + notes
+        guard terms else { return notesPart }
+        var lines: [String] = []
+        if !words.isEmpty {
+            lines.append("Speech recognition often mishears these names and terms: " + words.joined(separator: ", ") + ".")
+        }
+        // Rules double as examples, so the model also catches mishearings no rule lists yet.
+        if !vocabulary.replacements.isEmpty {
+            let rules = vocabulary.replacements.map { $0.heard.joined(separator: ", ") + " → " + $0.target }
+            lines.append("Known mishearings, heard → meant: " + rules.joined(separator: "; ") + ".")
+        }
+        lines.append(
+            "Replace a word or phrase with one of these terms, spelled exactly as listed, when it is a known "
+                + "mishearing or when it sounds like the term and does not fit the sentence as written. "
+                + "Leave words that fit the sentence alone.")
+        // The written style rewords a user selection; a lone word that sounds like a term is selected to fix it.
+        if style == .written {
+            lines.append(
+                "If the whole text is a single word or short phrase that sounds like one of these terms, "
+                    + "it was selected because it is misheard: output that term.")
+        }
+        return "\n\nVocabulary:\n" + lines.joined(separator: "\n") + notesPart
     }
 
     /// Gemma first for every style; `style` is kept for callers.

@@ -78,13 +78,15 @@ while checking. A request's timeout is 60 s plus twice the recording's
 length, so long dictations aren't killed just because the server stays
 quiet until it's done.
 
-Vocabulary has Known words and Replacements. Known words takes one word or
+Vocabulary has Known words, Replacements and Rewording instructions. Known words takes one word or
 phrase per line, sent as transcription context to help recognise names and
 jargon. Replacements takes one rule per line, like
 `Persuus, Pursus -> Perseus`, and rewrites those words in every transcript
 (whole words, ignoring case). Known words nudge the spelling of words the
 model already hears right; replacements fix words it keeps mishearing, for
-example because of how you pronounce them.
+example because of how you pronounce them. Rewording instructions are
+free-form notes for the rewording model, like "Acme Cloud is one product name;
+never split it."
 
 Rewording has the reword key and whether to reword the whole field when
 nothing is selected, "Clean up every dictation", and the Model server: its
@@ -182,8 +184,11 @@ With no usable model, rewording fails with "No rewording model available",
 or with the server's own error, such as a rejected API key.
 
 In both cases the model does not translate, answer questions or follow
-instructions in the text. Your known words go along, so it keeps those
-names and terms as written.
+instructions in the text. Your known words go along, so it corrects words
+that sound like them, even a single misheard word you select on its own.
+Your replacements apply before rewording, and go along as
+examples of how each term gets misheard. Your rewording instructions go
+along as written, including to Claude when the fallback is on.
 
 ## The overlay pill
 

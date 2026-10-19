@@ -604,10 +604,15 @@ struct ClaudeCLITests {
     }
 }
 
-// MARK: - Known words
+// MARK: - Vocabulary
 
-struct RewordingKnownWordsTests {
-    static let suffixHead = "\n\nThese names and terms are spelled correctly; keep them exactly as written: "
+struct RewordingVocabularyTests {
+    static let replaceLine = "Replace a word or phrase with one of these terms, spelled exactly as listed, when it is a known mishearing or when it sounds like the term and does not fit the sentence as written. Leave words that fit the sentence alone."
+    static let singleWordLine = "If the whole text is a single word or short phrase that sounds like one of these terms, it was selected because it is misheard: output that term."
+
+    static func wordsLine(_ words: String) -> String {
+        "Speech recognition often mishears these names and terms: \(words)."
+    }
 
     private func systemContent(_ data: Data) throws -> String {
         let obj = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
@@ -615,27 +620,97 @@ struct RewordingKnownWordsTests {
         return try #require(messages.first?["content"] as? String)
     }
 
-    @Test func emptyListReturnsBase() {
-        #expect(Rewording.systemPrompt(knownWords: []) == Rewording.systemPrompt)
+    @Test func emptyVocabularyReturnsBase() {
+        #expect(Rewording.systemPrompt(vocabulary: Vocabulary()) == Rewording.systemPrompt)
+        #expect(Rewording.systemPrompt(vocabulary: Vocabulary(), style: .written) == Rewording.writtenPrompt)
     }
 
-    @Test func blankEntriesReturnBase() {
-        #expect(Rewording.systemPrompt(knownWords: ["  ", ""]) == Rewording.systemPrompt)
+    @Test func blankKnownWordsAndNoRulesReturnBase() {
+        let vocabulary = Vocabulary(knownWords: ["  ", "", "\t\n"])
+        #expect(Rewording.systemPrompt(vocabulary: vocabulary) == Rewording.systemPrompt)
     }
 
-    @Test func trimsDedupesAndKeepsOrder() {
-        let got = Rewording.systemPrompt(knownWords: ["Perseus", " OPI ", "Perseus", "Claude Code"])
-        #expect(got == Rewording.systemPrompt + Self.suffixHead + "Perseus, OPI, Claude Code.")
+    @Test func knownWordsOnlyTrimsDedupesAndKeepsOrder() {
+        let vocabulary = Vocabulary(knownWords: ["Perseus", " OPI ", "Perseus", "Claude Code"])
+        let expected = Rewording.systemPrompt + "\n\nVocabulary:\n"
+            + Self.wordsLine("Perseus, OPI, Claude Code") + "\n"
+            + Self.replaceLine
+        #expect(Rewording.systemPrompt(vocabulary: vocabulary) == expected)
     }
 
-    @Test func chatRequestBodyWithKnownWords() throws {
-        let words = ["Perseus", " OPI ", "Perseus"]
-        let data = RewordClient.chatRequestBody(text: "hi", model: "m", knownWords: words)
-        #expect(try systemContent(data) == Rewording.systemPrompt(knownWords: words))
+    @Test func replacementsOnlyListsEveryRuleWithAllHeardVariants() {
+        let vocabulary = Vocabulary(replacements: [
+            Replacement(heard: ["Persuus", "Persuys"], target: "Perseus"),
+            Replacement(heard: ["TraderPR"], target: "create a PR"),
+        ])
+        let expected = Rewording.systemPrompt + "\n\nVocabulary:\n"
+            + "Known mishearings, heard \u{2192} meant: Persuus, Persuys \u{2192} Perseus; TraderPR \u{2192} create a PR." + "\n"
+            + Self.replaceLine
+        #expect(Rewording.systemPrompt(vocabulary: vocabulary) == expected)
+    }
+
+    @Test func knownWordsAndReplacementsKeepLineOrder() {
+        let vocabulary = Vocabulary(
+            knownWords: ["Perseus"],
+            replacements: [Replacement(heard: ["Persuus"], target: "Perseus")])
+        let expected = Rewording.systemPrompt + "\n\nVocabulary:\n"
+            + Self.wordsLine("Perseus") + "\n"
+            + "Known mishearings, heard \u{2192} meant: Persuus \u{2192} Perseus." + "\n"
+            + Self.replaceLine
+        #expect(Rewording.systemPrompt(vocabulary: vocabulary) == expected)
+    }
+
+    @Test func singleWordLineOnlyForWrittenStyle() {
+        let vocabulary = Vocabulary(knownWords: ["Perseus"])
+        let light = Rewording.systemPrompt(vocabulary: vocabulary, style: .light)
+        let written = Rewording.systemPrompt(vocabulary: vocabulary, style: .written)
+        #expect(!light.contains(Self.singleWordLine))
+        #expect(written == Rewording.writtenPrompt + "\n\nVocabulary:\n"
+            + Self.wordsLine("Perseus") + "\n"
+            + Self.replaceLine + "\n"
+            + Self.singleWordLine)
+    }
+
+    @Test func whitespaceOnlyInstructionsWithoutTermsReturnBase() {
+        let vocabulary = Vocabulary(instructions: " \n\t \n ")
+        #expect(Rewording.systemPrompt(vocabulary: vocabulary) == Rewording.systemPrompt)
+        #expect(Rewording.systemPrompt(vocabulary: vocabulary, style: .written) == Rewording.writtenPrompt)
+    }
+
+    @Test func instructionsOnlyAddNotesWithoutReplaceOrSingleWordLine() {
+        let vocabulary = Vocabulary(instructions: "\n  SDIA Perseus is one product name.  \n")
+        let got = Rewording.systemPrompt(vocabulary: vocabulary, style: .written)
+        #expect(got == Rewording.writtenPrompt + "\n\nNotes:\n" + "SDIA Perseus is one product name.")
+        #expect(!got.contains(Self.replaceLine))
+        #expect(!got.contains(Self.singleWordLine))
+    }
+
+    @Test func wordsAndInstructionsPutNotesLastInWrittenStyle() {
+        let vocabulary = Vocabulary(knownWords: ["Perseus"], instructions: " Keep it formal. ")
+        let expected = Rewording.writtenPrompt + "\n\nVocabulary:\n"
+            + Self.wordsLine("Perseus") + "\n"
+            + Self.replaceLine + "\n"
+            + Self.singleWordLine
+            + "\n\nNotes:\n" + "Keep it formal."
+        #expect(Rewording.systemPrompt(vocabulary: vocabulary, style: .written) == expected)
+    }
+
+    @Test func multiLineInstructionsKeepInternalNewlines() {
+        let vocabulary = Vocabulary(instructions: "First note.\n\nSecond note.\n")
+        #expect(Rewording.systemPrompt(vocabulary: vocabulary)
+            == Rewording.systemPrompt + "\n\nNotes:\n" + "First note.\n\nSecond note.")
+    }
+
+    @Test func chatRequestBodyCarriesVocabularyPrompt() throws {
+        let vocabulary = Vocabulary(
+            knownWords: ["Perseus", " OPI ", "Perseus"],
+            replacements: [Replacement(heard: ["Persuus"], target: "Perseus")])
+        let data = RewordClient.chatRequestBody(text: "hi", model: "m", vocabulary: vocabulary)
+        #expect(try systemContent(data) == Rewording.systemPrompt(vocabulary: vocabulary))
         #expect(try systemContent(data) != Rewording.systemPrompt)
     }
 
-    @Test func chatRequestBodyWithoutKnownWordsIsBase() throws {
+    @Test func chatRequestBodyWithoutVocabularyIsBase() throws {
         let data = RewordClient.chatRequestBody(text: "hi", model: "m")
         #expect(try systemContent(data) == Rewording.systemPrompt)
     }
@@ -644,8 +719,6 @@ struct RewordingKnownWordsTests {
 // MARK: - Reword styles
 
 struct RewordingStyleTests {
-    static let suffixHead = "\n\nThese names and terms are spelled correctly; keep them exactly as written: "
-
     static let writtenPromptV2 = """
         You turn dictated speech into the message the speaker meant to write, as if they had typed it carefully.
         1. Work out what they want: their requests, decisions and the reasons behind them.
@@ -696,18 +769,20 @@ struct RewordingStyleTests {
     // prompts
 
     @Test func systemPromptBaseDependsOnStyle() {
-        #expect(Rewording.systemPrompt(knownWords: [], style: .written) == Rewording.writtenPrompt)
-        #expect(Rewording.systemPrompt(knownWords: [], style: .light) == Rewording.systemPrompt)
-        #expect(Rewording.systemPrompt(knownWords: []) == Rewording.systemPrompt)
+        #expect(Rewording.systemPrompt(vocabulary: Vocabulary(), style: .written) == Rewording.writtenPrompt)
+        #expect(Rewording.systemPrompt(vocabulary: Vocabulary(), style: .light) == Rewording.systemPrompt)
+        #expect(Rewording.systemPrompt(vocabulary: Vocabulary()) == Rewording.systemPrompt)
         #expect(Rewording.writtenPrompt != Rewording.systemPrompt)
     }
 
-    @Test func knownWordsSuffixAppendedToBothStyles() {
-        let words = ["Perseus", " OPI ", "Perseus"]
-        #expect(Rewording.systemPrompt(knownWords: words, style: .written)
-            == Rewording.writtenPrompt + Self.suffixHead + "Perseus, OPI.")
-        #expect(Rewording.systemPrompt(knownWords: words, style: .light)
-            == Rewording.systemPrompt + Self.suffixHead + "Perseus, OPI.")
+    @Test func vocabularySuffixAppendedToBothStyles() {
+        let vocabulary = Vocabulary(knownWords: ["Perseus", " OPI ", "Perseus"])
+        let part = "\n\nVocabulary:\n" + RewordingVocabularyTests.wordsLine("Perseus, OPI")
+            + "\n" + RewordingVocabularyTests.replaceLine
+        #expect(Rewording.systemPrompt(vocabulary: vocabulary, style: .light)
+            == Rewording.systemPrompt + part)
+        #expect(Rewording.systemPrompt(vocabulary: vocabulary, style: .written)
+            == Rewording.writtenPrompt + part + "\n" + RewordingVocabularyTests.singleWordLine)
     }
 
     @Test func writtenPromptIsV2Text() {
@@ -717,12 +792,12 @@ struct RewordingStyleTests {
     // chatRequestBody
 
     @Test func chatRequestBodyWrittenUsesWrittenPromptAndTemperature() throws {
-        let words = ["Perseus"]
+        let vocabulary = Vocabulary(knownWords: ["Perseus"])
         let obj = try parse(RewordClient.chatRequestBody(
-            text: "um hi", model: "m", knownWords: words, style: .written))
+            text: "um hi", model: "m", vocabulary: vocabulary, style: .written))
         #expect(obj["temperature"] as? Double == 0.3)
         let messages = try #require(obj["messages"] as? [[String: Any]])
-        #expect(messages[0]["content"] as? String == Rewording.systemPrompt(knownWords: words, style: .written))
+        #expect(messages[0]["content"] as? String == Rewording.systemPrompt(vocabulary: vocabulary, style: .written))
         #expect(messages[1]["content"] as? String == "um hi")
     }
 

@@ -197,6 +197,16 @@ private struct VocabularyPane: View {
             } footer: {
                 Text("Applied to every transcript, so words you pronounce differently come out right. Variants are comma-separated.")
             }
+            Section {
+                TextEditor(text: $model.rewordInstructions)
+                    .font(.body)
+                    .scrollDisabled(false)
+                    .frame(height: 80)
+            } header: {
+                Text("Rewording instructions")
+            } footer: {
+                Text("Notes for the rewording model, such as “Acme Cloud is one product name; never split it.” Also sent to Claude when the Claude fallback is on.")
+            }
         }
         .fixedSize(horizontal: false, vertical: true)
     }
