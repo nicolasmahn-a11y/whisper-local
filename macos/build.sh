@@ -42,5 +42,10 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
 </dict>
 </plist>
 PLIST
-codesign --force --deep --sign - "$app"
+# A stable identity keeps macOS privacy grants across rebuilds; see make-signing-cert.sh.
+identity=-
+if security find-identity -v -p codesigning 2>/dev/null | grep -q '"Whisper Local Dev"'; then
+  identity="Whisper Local Dev"
+fi
+codesign --force --deep --sign "$identity" "$app"
 printf 'Built: %s\nInstall: cp -R "%s" /Applications/\n' "$app" "$app"

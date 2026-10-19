@@ -12,6 +12,7 @@ breaks.
 
 It needs macOS 14 or later. From this directory:
 
+    ./make-signing-cert.sh    # once; see Permissions
     swift build
     ./build.sh
     cp -R "build/Whisper Local.app" /Applications/
@@ -47,10 +48,16 @@ Microphone, and Local Network access (to reach a server on your network) when
 macOS asks. If one is missing, the menu says so; click that line to open the
 right page of System Settings.
 
-`build.sh` signs the app ad hoc, so every rebuild looks like a new app to macOS
-and can reset these permissions. Grant them again after installing a rebuild;
-if a switch already looks on but nothing works, remove the app from the list
-and add it again.
+macOS ties these permissions to the app's signature.
+`./make-signing-cert.sh` creates a self-signed code-signing identity,
+"Whisper Local Dev", in your login keychain, without admin rights; it is safe
+to run again. It asks once for your login password to trust the
+certificate for code signing, and the first build with it asks to let
+`codesign` use the key; choose Always Allow. When that identity exists,
+`build.sh` signs with it, so a rebuild keeps its permissions. Otherwise `build.sh` signs ad hoc, every
+rebuild looks like a new app to macOS and can reset them: grant them again
+after installing a rebuild, and if a switch already looks on but nothing
+works, remove the app from the list and add it again.
 
 ## Settings
 
