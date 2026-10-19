@@ -23,6 +23,18 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
   <key>LSUIElement</key><true/>
   <key>NSMicrophoneUsageDescription</key><string>Record speech during held-key or hands-free dictation.</string>
   <key>NSLocalNetworkUsageDescription</key><string>Send dictation audio to your speech server on the local network.</string>
+  <key>NSServices</key>
+  <array>
+    <dict>
+      <key>NSMenuItem</key><dict><key>default</key><string>Reword with Whisper Local</string></dict>
+      <key>NSMessage</key><string>rewordText</string>
+      <key>NSPortName</key><string>Whisper Local</string>
+      <key>NSSendTypes</key><array><string>NSStringPboardType</string><string>public.utf8-plain-text</string></array>
+      <key>NSReturnTypes</key><array><string>NSStringPboardType</string><string>public.utf8-plain-text</string></array>
+      <key>NSTimeout</key><string>180000</string>
+      <key>NSRequiredContext</key><dict/>
+    </dict>
+  </array>
   <key>NSAppTransportSecurity</key>
   <dict>
     <key>NSAllowsArbitraryLoads</key><true/>

@@ -65,6 +65,9 @@ private struct MenuContent: View {
                     Button(problem.text) { model.openProblemSettings() }
                 }
             }
+            if model.micWarm {
+                Button("Stop keeping microphone ready") { model.coolDownMic() }
+            }
             Button("Settings…") {
                 openSettings()
                 SettingsWindow.shared.present()
@@ -127,6 +130,12 @@ private struct SettingsView: View {
                     }
                 }
                 TextField("Language", text: $model.language, prompt: Text("Auto-detect"))
+                VStack(alignment: .leading, spacing: 2) {
+                    Toggle("Keep microphone ready for an hour after dictating", isOn: $model.keepMicReady)
+                    Text("Catches the first word when you start speaking just before the key. The microphone stays on (the system's orange microphone dot) until an hour after the last dictation.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
             }
             Section {
                 LinesEditor(label: "Known words", lines: $model.knownWords)
@@ -141,6 +150,36 @@ private struct SettingsView: View {
                 Text("Replacements")
             } footer: {
                 Text("One rule per line, like `Persuus, Pursus -> Perseus`. Applied to every transcript, so words you pronounce differently come out right.")
+            }
+            Section {
+                Picker("Reword key", selection: $model.rewordKey) {
+                    Text("None").tag(Optional<DictationKey>.none)
+                    ForEach(DictationKey.allCases.filter { $0 != model.key && $0 != model.handsFreeKey }) { key in
+                        Text(key.title).tag(Optional<DictationKey>.some(key))
+                    }
+                }
+                Toggle("Reword whole field when nothing is selected", isOn: $model.rewordWholeField)
+                VStack(alignment: .leading, spacing: 2) {
+                    Toggle("Clean up every dictation", isOn: $model.autoReword)
+                    Text("Uses the rewording server's light cleanup. Adds a few seconds; the raw transcript is pasted if cleanup fails.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                TextField("Server URL", text: $model.rewordServerURL, prompt: Text("http://localhost:8400/v1"))
+                SecureField("API key", text: Binding(
+                    get: { model.rewordAPIKey },
+                    set: { model.updateRewordAPIKey($0) }
+                ), prompt: Text("Optional"))
+                Toggle("Fall back to Claude Haiku", isOn: $model.rewordClaudeFallback)
+            } header: {
+                Text("Rewording")
+            } footer: {
+                Text((model.rewordKey.map { "Tap \($0.title) to rewrite the selected text as if you had typed it, or " }
+                    ?? "To rewrite selected text as if you had typed it, ")
+                    + "use Services › Reword with Whisper Local in the right-click menu. "
+                    + (ClaudeCLI.locate() == nil
+                        ? "claude CLI not found, so there is no Claude fallback."
+                        : "The Claude fallback sends the text to Anthropic via the claude CLI."))
             }
             Section("General") {
                 Toggle("Sounds", isOn: $model.sounds)

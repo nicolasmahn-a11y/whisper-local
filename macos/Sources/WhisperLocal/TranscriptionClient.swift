@@ -20,7 +20,7 @@ enum SpeechError: LocalizedError {
     }
 }
 
-private final class SameOriginRedirectDelegate: NSObject, URLSessionTaskDelegate {
+final class SameOriginRedirectDelegate: NSObject, URLSessionTaskDelegate {
     func urlSession(
         _ session: URLSession,
         task: URLSessionTask,

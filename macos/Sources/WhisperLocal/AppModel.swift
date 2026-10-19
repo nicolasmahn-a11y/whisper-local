@@ -75,6 +75,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var state: DictationState = .idle {
         didSet {
             if state != oldValue {
+                if state != .idle { dictationActivity += 1 }
                 level = 0
                 lastLevelAt = nil
                 updateOverlay()
@@ -91,6 +92,7 @@ final class AppModel: ObservableObject {
         didSet {
             defaults.set(enabled, forKey: "enabled")
             dictation.enabled = enabled && permissionProblem == nil
+            if !enabled { coolDownMic() }
         }
     }
     @Published var serverURL: String {
@@ -99,6 +101,7 @@ final class AppModel: ObservableObject {
     @Published var key: DictationKey {
         didSet {
             if handsFreeKey == key { handsFreeKey = nil }
+            if rewordKey == key { rewordKey = nil }
             defaults.set(key.rawValue, forKey: "dictationKey")
             hotkey?.setKey(key)
             updateOverlay()
@@ -106,10 +109,17 @@ final class AppModel: ObservableObject {
     }
     @Published var handsFreeKey: DictationKey? {
         didSet {
+            if rewordKey != nil, rewordKey == handsFreeKey { rewordKey = nil }
             defaults.set(handsFreeKey?.rawValue ?? "", forKey: "handsFreeKey")
             hotkey?.setHandsFreeKey(handsFreeKey)
             dictation.usesDedicatedHandsFreeKey = handsFreeKey != nil
             updateOverlay()
+        }
+    }
+    @Published var rewordKey: DictationKey? {
+        didSet {
+            defaults.set(rewordKey?.rawValue ?? "", forKey: "rewordKey")
+            hotkey?.setRewordKey(rewordKey)
         }
     }
     @Published var language: String {
@@ -121,16 +131,47 @@ final class AppModel: ObservableObject {
     @Published var replacements: [String] {
         didSet { defaults.set(replacements, forKey: "replacements") }
     }
+    @Published var keepMicReady: Bool {
+        didSet {
+            defaults.set(keepMicReady, forKey: "keepMicReady")
+            if !keepMicReady { coolDownMic() }
+        }
+    }
+    @Published private(set) var micWarm = false
     @Published var sounds: Bool {
         didSet { defaults.set(sounds, forKey: "sounds") }
     }
     @Published private(set) var apiKey: String
+    @Published var rewordServerURL: String {
+        didSet {
+            defaults.set(rewordServerURL, forKey: "rewordServerURL")
+            rewordModels.removeAll()
+        }
+    }
+    @Published var rewordWholeField: Bool {
+        didSet { defaults.set(rewordWholeField, forKey: "rewordWholeField") }
+    }
+    @Published var autoReword: Bool {
+        didSet { defaults.set(autoReword, forKey: "autoReword") }
+    }
+    @Published var rewordClaudeFallback: Bool {
+        didSet { defaults.set(rewordClaudeFallback, forKey: "rewordClaudeFallback") }
+    }
+    @Published private(set) var rewordAPIKey: String
 
     private let defaults = UserDefaults.standard
     private lazy var recorder = AudioRecorder(onLevel: { [weak self] level in
         Task { @MainActor [weak self] in self?.receiveLevel(level) }
     })
     private let client = TranscriptionClient()
+    private let rewordClient = RewordClient()
+    private let rewordModels = RewordModelCache()
+    private var servicesProvider: RewordServiceProvider?
+    private var rewordInFlight = false
+    private var dictationActivity = 0
+    private var showsRewording = false {
+        didSet { updateOverlay() }
+    }
     private let cache = RecordingCache(directory: RecordingCache.defaultDirectory())
     private var overlay: DictationOverlay?
     private var hotkey: HotkeyMonitor?
@@ -147,12 +188,20 @@ final class AppModel: ObservableObject {
     private var lastLevelAt: TimeInterval?
     private var started = false
     private var refreshTask: Task<Void, Never>?
+    private var lastRecordingEnded: TimeInterval?
+    private var coolDownTask: Task<Void, Never>?
 
     private lazy var dictation: Dictation = {
         let dictation = Dictation(services: DictationServices(
             startRecording: { [recorder] in try recorder.start() },
-            stopRecording: { [recorder] in try recorder.stop() },
-            cancelRecording: { [recorder] in recorder.cancel() },
+            stopRecording: { [weak self, recorder] in
+                defer { self?.recordingEnded() }
+                return try recorder.stop(keepWarm: self?.keepsMicWarm ?? false)
+            },
+            cancelRecording: { [weak self, recorder] in
+                recorder.cancel(keepWarm: self?.keepsMicWarm ?? false)
+                self?.recordingEnded()
+            },
             transcribe: { [weak self] wav in
                 guard let self else { throw CancellationError() }
                 return try await self.transcribeKeepingAudio(wav)
@@ -160,7 +209,7 @@ final class AppModel: ObservableObject {
             paste: { text in try KeyboardPaste.paste(text) },
             cue: { [weak self] cue in self?.play(cue) },
             clock: { ProcessInfo.processInfo.systemUptime }
-        ))
+        ), postRollSeconds: 0.3)
         dictation.enabled = enabled
         dictation.usesDedicatedHandsFreeKey = handsFreeKey != nil
         dictation.onState = { [weak self] in self?.state = $0 }
@@ -179,12 +228,21 @@ final class AppModel: ObservableObject {
         let storedKey = DictationKey(rawValue: stored.string(forKey: "dictationKey") ?? "") ?? .rightAlt
         key = storedKey
         let storedHandsFreeKey = DictationKey(rawValue: stored.string(forKey: "handsFreeKey") ?? "")
-        handsFreeKey = storedHandsFreeKey == storedKey ? nil : storedHandsFreeKey
+        let resolvedHandsFreeKey = storedHandsFreeKey == storedKey ? nil : storedHandsFreeKey
+        handsFreeKey = resolvedHandsFreeKey
+        let storedRewordKey = stored.string(forKey: "rewordKey").map { DictationKey(rawValue: $0) } ?? .rightCommand
+        rewordKey = storedRewordKey == storedKey || storedRewordKey == resolvedHandsFreeKey ? nil : storedRewordKey
         language = stored.string(forKey: "language") ?? ""
         knownWords = stored.stringArray(forKey: "knownWords") ?? []
         replacements = stored.stringArray(forKey: "replacements") ?? []
         sounds = stored.object(forKey: "sounds") as? Bool ?? true
+        keepMicReady = stored.object(forKey: "keepMicReady") as? Bool ?? false
         apiKey = Keychain.apiKey() ?? ""
+        rewordServerURL = stored.string(forKey: "rewordServerURL") ?? "http://localhost:8400/v1"
+        rewordWholeField = stored.object(forKey: "rewordWholeField") as? Bool ?? true
+        autoReword = stored.object(forKey: "autoReword") as? Bool ?? false
+        rewordClaudeFallback = stored.object(forKey: "rewordClaudeFallback") as? Bool ?? true
+        rewordAPIKey = Keychain.value(for: "rewordAPIKey") ?? ""
         let status = SMAppService.mainApp.status
         launchAtLogin = status == .enabled || status == .requiresApproval
         Task { [weak self] in await self?.start() }
@@ -194,8 +252,17 @@ final class AppModel: ObservableObject {
         guard !started else { return }
         started = true
         _ = dictation
+        recorder.onCooledDown = { [weak self] in MainActor.assumeIsolated { self?.coolDownMic() } }
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in MainActor.assumeIsolated { self?.scheduleCoolDown() } }
         overlay = DictationOverlay()
         updateOverlay()
+        servicesProvider = RewordServiceProvider { [weak self] text in
+            try await self?.rewordForService(text)
+        }
+        NSApp.servicesProvider = servicesProvider
+        NSUpdateDynamicServices()
         refreshRecordings()
         refreshTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -281,7 +348,68 @@ final class AppModel: ObservableObject {
             wav: wav, serverURL: serverURL, apiKey: apiKey,
             language: language, knownWords: knownWords
         )
-        return Replacements.apply(Replacements.rules(from: replacements), to: text)
+        let replaced = Replacements.apply(Replacements.rules(from: replacements), to: text)
+        guard autoReword, !replaced.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              replaced.count <= Rewording.maxCharacters else { return replaced }
+        do {
+            let cleaned = try await Rewording.reword(
+                replaced, using: rewordServices(style: .light, chatTimeout: 15, claude: false), style: .light
+            )
+            return Replacements.apply(Replacements.rules(from: replacements), to: cleaned)
+        } catch {
+            // Cleanup is best effort: keep the raw transcript.
+            try Task.checkCancellation()
+            return replaced
+        }
+    }
+
+    private var warmPolicy: WarmMicPolicy {
+        WarmMicPolicy(enabled: keepMicReady && enabled && permissionProblem == nil)
+    }
+
+    /// "Stop keeping microphone ready" during a recording: don't keep the mic warm after it.
+    private var coolDownRequested = false
+
+    private var keepsMicWarm: Bool {
+        let now = Date().timeIntervalSince1970
+        return !coolDownRequested && warmPolicy.shouldBeWarm(lastRecordingEnded: now, now: now)
+    }
+
+    private func recordingEnded() {
+        lastRecordingEnded = Date().timeIntervalSince1970
+        coolDownRequested = false
+        micWarm = recorder.isWarm
+        scheduleCoolDown()
+    }
+
+    /// Wall-clock time, so system sleep counts toward the hour.
+    private func scheduleCoolDown() {
+        coolDownTask?.cancel()
+        guard micWarm else { return }
+        coolDownTask = Task { [weak self] in
+            while !Task.isCancelled {
+                // A running recording reschedules when it ends.
+                guard let self, !self.recorder.isRecording else { return }
+                let remaining = self.warmSecondsLeft()
+                guard remaining > 0 else { return self.coolDownMic() }
+                try? await Task.sleep(for: .seconds(remaining))
+            }
+        }
+    }
+
+    private func warmSecondsLeft() -> TimeInterval {
+        let now = Date().timeIntervalSince1970
+        guard let lastRecordingEnded, recorder.isWarm,
+              warmPolicy.shouldBeWarm(lastRecordingEnded: lastRecordingEnded, now: now) else { return 0 }
+        return warmPolicy.coolDownAt(lastRecordingEnded: lastRecordingEnded) - now
+    }
+
+    func coolDownMic() {
+        coolDownTask?.cancel()
+        coolDownTask = nil
+        if recorder.isRecording { coolDownRequested = true }
+        recorder.coolDown()
+        micWarm = false
     }
 
     private func refreshRecordings() {
@@ -343,7 +471,7 @@ final class AppModel: ObservableObject {
 
         if canListen {
             if hotkey == nil {
-                hotkey = HotkeyMonitor(key: key, handsFreeKey: handsFreeKey) { [weak self] input in
+                hotkey = HotkeyMonitor(key: key, handsFreeKey: handsFreeKey, rewordKey: rewordKey) { [weak self] input in
                     guard let self else { return }
                     switch input {
                     case .pressed: self.dictation.pressed()
@@ -354,6 +482,8 @@ final class AppModel: ObservableObject {
                     case .escapePressed:
                         self.dictation.escaped()
                         self.dictation.interrupted()
+                    case .rewordTapped:
+                        Task { await self.rewordSelection() }
                     }
                 }
             }
@@ -367,6 +497,7 @@ final class AppModel: ObservableObject {
         }
         publishProblem()
         dictation.enabled = enabled && permissionProblem == nil
+        if !dictation.enabled { coolDownMic() }
     }
 
     func checkReachability() async {
@@ -381,6 +512,145 @@ final class AppModel: ObservableObject {
         } catch {
             report(AppIssue.apiKey)
         }
+    }
+
+    func updateRewordAPIKey(_ value: String) {
+        do {
+            try Keychain.set(value, for: "rewordAPIKey")
+            rewordAPIKey = value
+            rewordModels.removeAll()
+        } catch {
+            report(AppIssue.apiKey)
+        }
+    }
+
+    /// Reword key tapped: copy the selection (or the whole field), reword it, paste the result over it.
+    func rewordSelection() async {
+        guard !rewordInFlight, state == .idle, retryingIDs.isEmpty else { return }
+        rewordInFlight = true
+        defer {
+            rewordInFlight = false
+            showsRewording = false
+        }
+        guard await waitForModifiersReleased() else { return }
+        let app = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        let pasteboard = NSPasteboard.general
+        let clipboard = pasteboard.string(forType: .string)
+        let clipboardChange = pasteboard.changeCount
+        var selectedAll = false
+        do {
+            let text = try await copySelection(selectedAll: &selectedAll)
+            let activity = dictationActivity
+            let result = try await reword(text)
+            // A dictation or another app now owns the focus; don't paste into it.
+            if dictationActivity != activity || state != .idle
+                || NSWorkspace.shared.frontmostApplication?.processIdentifier != app {
+                if copy(result) { show(notice: "Reworded text copied") }
+            } else {
+                try KeyboardPaste.paste(result)
+            }
+        } catch {
+            if pasteboard.changeCount != clipboardChange, let clipboard {
+                pasteboard.clearContents()
+                pasteboard.setString(clipboard, forType: .string)
+            }
+            if selectedAll, NSWorkspace.shared.frontmostApplication?.processIdentifier == app {
+                try? KeyboardPaste.collapseSelection()
+            }
+            failReword(error)
+        }
+    }
+
+    /// Services menu: returns nil when ignored because a reword or dictation is in progress.
+    private func rewordForService(_ text: String) async throws -> String? {
+        guard !rewordInFlight, state == .idle, retryingIDs.isEmpty else { return nil }
+        rewordInFlight = true
+        defer {
+            rewordInFlight = false
+            showsRewording = false
+        }
+        do {
+            return try await reword(text)
+        } catch {
+            failReword(error)
+            throw error
+        }
+    }
+
+    private func reword(_ text: String) async throws -> String {
+        showsRewording = true
+        let result = try await Rewording.reword(text, using: rewordServices(style: .written), style: .written)
+        recentTranscripts = Array(([result] + recentTranscripts).prefix(5))
+        return result
+    }
+
+    private func rewordServices(
+        style: RewordStyle, chatTimeout: TimeInterval = 60, claude useClaude: Bool = true
+    ) -> RewordServices {
+        let client = rewordClient, serverURL = rewordServerURL, apiKey = rewordAPIKey, knownWords = knownWords
+        let claude = useClaude && rewordClaudeFallback ? ClaudeCLI.locate() : nil
+        let cache = rewordModels
+        return RewordServices(
+            listModels: {
+                if let cached = cache[serverURL, style] { return [cached] }
+                let ids = try await client.models(serverURL: serverURL, apiKey: apiKey)
+                cache[serverURL, style] = Rewording.chooseModel(from: ids, style: style)
+                return ids
+            },
+            rewordLocal: { text, model in
+                do {
+                    return try await client.reword(
+                        text, model: model, serverURL: serverURL, apiKey: apiKey,
+                        knownWords: knownWords, style: style, timeout: chatTimeout
+                    )
+                } catch let error as RewordError where error != .unreachable {
+                    cache[serverURL, style] = nil
+                    throw error
+                }
+            },
+            rewordWithClaude: claude.map { executable in
+                { text in try await ClaudeCLI.reword(text, executable: executable, knownWords: knownWords, style: style) }
+            }
+        )
+    }
+
+    /// So the synthetic ⌘C isn't merged with held modifiers.
+    private func waitForModifiersReleased() async -> Bool {
+        let held: CGEventFlags = [.maskControl, .maskAlternate, .maskCommand, .maskShift]
+        for _ in 0..<15 {
+            if CGEventSource.flagsState(.combinedSessionState).isDisjoint(with: held) { return true }
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+        return false
+    }
+
+    private func copySelection(selectedAll: inout Bool) async throws -> String {
+        if let text = try await copyCurrentSelection() { return text }
+        // Only select all in a text field; elsewhere ⌘A would select a whole page or file list.
+        guard rewordWholeField, FocusedElement.isEditableText() != false else { throw RewordError.nothingSelected }
+        try KeyboardPaste.selectAll()
+        selectedAll = true
+        try? await Task.sleep(for: .milliseconds(50))
+        guard let text = try await copyCurrentSelection() else { throw RewordError.nothingSelected }
+        return text
+    }
+
+    private func copyCurrentSelection() async throws -> String? {
+        let pasteboard = NSPasteboard.general
+        let before = pasteboard.changeCount
+        try KeyboardPaste.copySelection()
+        for _ in 0..<25 where pasteboard.changeCount == before {
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+        guard pasteboard.changeCount != before, let text = pasteboard.string(forType: .string),
+              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { return nil }
+        return text
+    }
+
+    private func failReword(_ error: Error) {
+        report(error)
+        play(.error)
     }
 
     func setLaunchAtLogin(_ value: Bool) {
@@ -444,6 +714,7 @@ final class AppModel: ObservableObject {
         case let known as AppIssue: known.localizedDescription
         case let known as SpeechError: known.localizedDescription
         case let known as RecordingError: known.localizedDescription
+        case let known as RewordError: known.localizedDescription
         default: "Operation failed"
         }
     }
@@ -484,7 +755,8 @@ final class AppModel: ObservableObject {
             ?? notice.map { OverlayMessage.notice($0) }
         overlay?.update(
             state: state == .idle && !retryingIDs.isEmpty ? .transcribing : state,
-            level: level, keyName: (handsFreeKey ?? key).title, message: message
+            level: level, keyName: (handsFreeKey ?? key).title, message: message,
+            rewording: showsRewording
         )
     }
 

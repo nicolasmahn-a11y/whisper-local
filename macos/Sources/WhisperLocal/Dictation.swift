@@ -28,6 +28,8 @@ final class Dictation {
     private let services: DictationServices
     private let minimumSeconds: TimeInterval
     private let doubleTapSeconds: TimeInterval
+    private let postRollSeconds: TimeInterval
+    private var postRoll: Task<Void, Never>?
     private var startedAt: TimeInterval?
     private var isHandsFree = false
     private var handsFreeKeyIsDown = false
@@ -67,11 +69,13 @@ final class Dictation {
     init(
         services: DictationServices,
         minimumSeconds: TimeInterval = 0.3,
-        doubleTapSeconds: TimeInterval = 0.4
+        doubleTapSeconds: TimeInterval = 0.4,
+        postRollSeconds: TimeInterval = 0
     ) {
         self.services = services
         self.minimumSeconds = minimumSeconds
         self.doubleTapSeconds = doubleTapSeconds
+        self.postRollSeconds = postRollSeconds
     }
 
     func pressed() {
@@ -110,6 +114,8 @@ final class Dictation {
     }
 
     private func startRecording(at now: TimeInterval, handsFree: Bool) {
+        // The start cue follows right away; skip the stop cue.
+        stopAfterPostRoll(cue: false)
         do {
             try services.startRecording()
             startedAt = now
@@ -152,14 +158,36 @@ final class Dictation {
         guard startedAt != nil else { return }
         startedAt = nil
         isHandsFree = false
+        guard postRollSeconds > 0 else { return stopRecording(reserved: false) }
+        // Keep recording briefly so the last word isn't clipped; the stop cue comes after.
+        pendingJobs += 1
+        updateState()
+        postRoll = Task { [weak self, postRollSeconds] in
+            try? await Task.sleep(for: .seconds(postRollSeconds))
+            guard !Task.isCancelled else { return }
+            self?.stopAfterPostRoll()
+        }
+    }
+
+    /// Stops a finished recording whose post-roll is still running, if any.
+    private func stopAfterPostRoll(cue: Bool = true) {
+        guard let postRoll else { return }
+        postRoll.cancel()
+        self.postRoll = nil
+        stopRecording(reserved: true, cue: cue)
+    }
+
+    /// `reserved`: the job was already counted when the post-roll began.
+    private func stopRecording(reserved: Bool, cue: Bool = true) {
         do {
             let wav = try services.stopRecording()
-            services.cue(.stop)
+            if cue { services.cue(.stop) }
             jobs.append(wav)
-            pendingJobs += 1
+            if !reserved { pendingJobs += 1 }
             updateState()
             startWorkerIfNeeded()
         } catch {
+            if reserved { pendingJobs -= 1 }
             fail(error)
             updateState()
         }

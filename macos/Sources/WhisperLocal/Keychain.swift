@@ -3,10 +3,12 @@ import Security
 
 enum Keychain {
     private static let service = "io.github.nicolasmahn.WhisperLocal"
-    private static let account = "apiKey"
 
-    static func apiKey() -> String? {
-        var query = baseQuery
+    static func apiKey() -> String? { value(for: "apiKey") }
+    static func setAPIKey(_ value: String) throws { try set(value, for: "apiKey") }
+
+    static func value(for account: String) -> String? {
+        var query = baseQuery(account)
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         var result: CFTypeRef?
@@ -15,23 +17,23 @@ enum Keychain {
         return String(data: data, encoding: .utf8)
     }
 
-    static func setAPIKey(_ value: String) throws {
+    static func set(_ value: String, for account: String) throws {
         if value.isEmpty {
-            let status = SecItemDelete(baseQuery as CFDictionary)
+            let status = SecItemDelete(baseQuery(account) as CFDictionary)
             guard status == errSecSuccess || status == errSecItemNotFound else { throw KeychainError(status) }
             return
         }
         let data = Data(value.utf8)
-        let updated = SecItemUpdate(baseQuery as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+        let updated = SecItemUpdate(baseQuery(account) as CFDictionary, [kSecValueData as String: data] as CFDictionary)
         if updated == errSecSuccess { return }
         guard updated == errSecItemNotFound else { throw KeychainError(updated) }
-        var query = baseQuery
+        var query = baseQuery(account)
         query[kSecValueData as String] = data
         let added = SecItemAdd(query as CFDictionary, nil)
         guard added == errSecSuccess else { throw KeychainError(added) }
     }
 
-    private static var baseQuery: [String: Any] {
+    private static func baseQuery(_ account: String) -> [String: Any] {
         [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,

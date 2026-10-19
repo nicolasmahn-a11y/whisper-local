@@ -14,6 +14,7 @@ private final class OverlayDisplay: ObservableObject {
     @Published var keyName = "Right Option"
     @Published var message: OverlayMessage?
     @Published var transcribingSince = Date()
+    @Published var rewording = false
 }
 
 @MainActor
@@ -41,18 +42,19 @@ final class DictationOverlay {
         panel.contentView = NSHostingView(rootView: OverlayView(display: display).frame(width: size.width, height: size.height))
     }
 
-    func update(state: DictationState, level: Double, keyName: String, message: OverlayMessage?) {
-        let stateChanged = display.state != state
+    func update(state: DictationState, level: Double, keyName: String, message: OverlayMessage?, rewording: Bool = false) {
+        let stateChanged = display.state != state || display.rewording != rewording
         if stateChanged {
-            if state == .transcribing { display.transcribingSince = Date() }
+            if state == .transcribing && display.state != state { display.transcribingSince = Date() }
             display.state = state
+            display.rewording = rewording
         }
         display.level = state == .listening || state == .handsFree
             ? display.level * 0.65 + level * 0.35 : 0
         if display.keyName != keyName { display.keyName = keyName }
         if display.message != message { display.message = message }
 
-        let shouldShow = state != .idle || message != nil
+        let shouldShow = state != .idle || rewording || message != nil
         if shouldShow && visible && stateChanged { position() }
         guard shouldShow != visible else { return }
         visible = shouldShow
@@ -102,7 +104,7 @@ private struct OverlayView: View {
                         state: display.state, enabled: true, hasProblem: true
                     ).color)
                 MessageText(text: text)
-            } else if case .notice(let text) = display.message, display.state == .idle {
+            } else if case .notice(let text) = display.message, display.state == .idle, !display.rewording {
                 Image(systemName: "checkmark.circle.fill")
                     .foregroundStyle(Theme.green)
                 MessageText(text: text)
@@ -130,7 +132,12 @@ private struct OverlayView: View {
                         ))
                     }
                 case .idle:
-                    EmptyView()
+                    if display.rewording {
+                        BusyDots(color: DictationStyle.current(
+                            state: .transcribing, enabled: true, hasProblem: false
+                        ).color, label: "Rewording")
+                        StatusText(text: "Rewording…")
+                    }
                 }
             }
         }
@@ -185,6 +192,7 @@ private struct LevelBars: View {
 
 private struct BusyDots: View {
     let color: Color
+    var label = "Transcribing"
 
     var body: some View {
         TimelineView(.animation(minimumInterval: 0.16)) { context in
@@ -199,6 +207,6 @@ private struct BusyDots: View {
             }
         }
         .frame(height: 30)
-        .accessibilityLabel("Transcribing")
+        .accessibilityLabel(label)
     }
 }

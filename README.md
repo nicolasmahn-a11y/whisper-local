@@ -74,10 +74,21 @@ in normal text fields.
 - The window (Linux) and the menu (macOS) keep the five most recent
   transcripts, so you can copy one again.
 - The microphone is open only while recording, so the system's microphone
-  indicator shows when it listens.
+  indicator shows when it listens. On macOS you can opt in to keeping it
+  open for an hour after dictating; see below.
+- On macOS only, select text and tap Right Command (configurable) to have a
+  language model rewrite it as if you had typed it: concise, no fillers or
+  false starts, same voice and language. With nothing selected it rewords
+  the whole field. An opt-in setting also lightly cleans up every dictation
+  before pasting it. See [macos/README.md](macos/README.md#rewording).
 
 Opening the microphone takes about 80 ms, which can cut off the first
-syllable; start speaking just after the tone.
+syllable; start speaking just after the tone. On macOS, recording also runs
+on for 0.3 s after you let go, so the last word isn't clipped, and
+"Keep microphone ready for an hour after dictating" (off by default) keeps
+the microphone open between dictations, so a word started just before the
+key is caught too. See
+[macos/README.md](macos/README.md#catching-the-first-and-last-word).
 
 ## Settings
 
@@ -106,6 +117,14 @@ apply to the next recording without a restart.
 ## Privacy and security
 
 - Audio goes only to the server URL you configure, and nowhere else.
+- On macOS, with "Keep microphone ready" on, the microphone records
+  continuously until an hour after the last dictation, but only the last
+  0.75 s is kept, in memory, and it is sent only as the start of your next
+  dictation.
+- On macOS, text you reword goes to the rewording server you configure. If
+  that fails and the Claude fallback is on, it goes to Anthropic through the
+  `claude` CLI instead. With "Clean up every dictation" on, every transcript
+  also goes to the rewording server, but never to Claude.
 - Over plain HTTP on a network, anyone else on that network can read the audio,
   the transcripts and the API key. Use HTTPS, or keep the server on the same
   machine, if that matters to you.

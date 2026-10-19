@@ -20,6 +20,8 @@ enum RecordingError: LocalizedError {
 }
 
 final class AudioRecorder {
+    /// Converts tap buffers to 16 kHz mono Int16. While recording, samples go into the recording;
+    /// otherwise (warm) into the pre-roll buffer.
     private final class Capture {
         private let lock = NSLock()
         private let callbacks = DispatchGroup()
@@ -27,7 +29,8 @@ final class AudioRecorder {
         private let outputFormat: AVAudioFormat
         private let inputRate: Double
         private let onLevel: @Sendable (Double) -> Void
-        private var bytes = Data()
+        private var bytes: Data?
+        private var preRoll = PreRollBuffer(capacitySamples: AudioRecorder.preRollSamples)
         private var failed = false
         private var finished = false
 
@@ -42,6 +45,9 @@ final class AudioRecorder {
             self.inputRate = inputRate
             self.onLevel = onLevel
         }
+
+        var isRecording: Bool { lock.withLock { bytes != nil } }
+        var hasFailed: Bool { lock.withLock { failed } }
 
         func receive(_ buffer: AVAudioPCMBuffer) {
             callbacks.enter()
@@ -72,8 +78,42 @@ final class AudioRecorder {
                 failed = true
                 return
             }
+            if bytes == nil {
+                if output.frameLength > 0, let samples = output.int16ChannelData?[0] {
+                    preRoll.append(Array(UnsafeBufferPointer(start: samples, count: Int(output.frameLength))))
+                }
+                return
+            }
             if let level = Self.level(from: output) { onLevel(level) }
             append(output)
+        }
+
+        /// Starts recording, beginning with the pre-roll gathered while warm.
+        func begin() {
+            lock.lock()
+            defer { lock.unlock() }
+            bytes = preRoll.snapshot().withUnsafeBufferPointer { Data(buffer: $0) }
+            preRoll.removeAll()
+        }
+
+        /// Ends the recording while the engine keeps running.
+        func end() throws -> Data {
+            lock.lock()
+            defer { lock.unlock() }
+            let recorded = bytes ?? Data()
+            bytes = nil
+            if failed { throw RecordingError.conversionFailed }
+            if recorded.isEmpty { throw RecordingError.noAudio }
+            return recorded
+        }
+
+        /// The engine stopped under a recording; the take is incomplete.
+        func markFailed() {
+            lock.withLock { failed = true }
+        }
+
+        func discard() {
+            lock.withLock { bytes = nil }
         }
 
         func finish() throws -> Data {
@@ -97,13 +137,13 @@ final class AudioRecorder {
                 if status == .endOfStream { break }
                 guard status == .haveData, output.frameLength > 0 else { throw RecordingError.conversionFailed }
             }
-            if bytes.isEmpty { throw RecordingError.noAudio }
+            guard let bytes, !bytes.isEmpty else { throw RecordingError.noAudio }
             return bytes
         }
 
         private func append(_ output: AVAudioPCMBuffer) {
             if output.frameLength > 0, let samples = output.int16ChannelData?[0] {
-                bytes.append(Data(bytes: samples, count: Int(output.frameLength) * MemoryLayout<Int16>.size))
+                bytes?.append(Data(bytes: samples, count: Int(output.frameLength) * MemoryLayout<Int16>.size))
             }
         }
 
@@ -121,16 +161,32 @@ final class AudioRecorder {
         }
     }
 
+    static let preRollSamples = 12_000
+
     private let onLevel: @Sendable (Double) -> Void
     private var engine: AVAudioEngine?
     private var capture: Capture?
+    private var configurationObserver: NSObjectProtocol?
+    /// Called on the main queue when a warm engine was shut down by a device change.
+    var onCooledDown: () -> Void = {}
 
     init(onLevel: @escaping @Sendable (Double) -> Void = { _ in }) {
         self.onLevel = onLevel
     }
 
+    /// The engine is running between recordings, filling the pre-roll.
+    var isWarm: Bool { engine?.isRunning == true && capture?.isRecording == false }
+    var isRecording: Bool { capture?.isRecording == true }
+
     func start() throws {
-        guard engine == nil else { throw RecordingError.alreadyRecording }
+        if let engine, let capture {
+            guard !capture.isRecording else { throw RecordingError.alreadyRecording }
+            if engine.isRunning && !capture.hasFailed {
+                capture.begin()
+                return
+            }
+            tearDown()
+        }
         let engine = AVAudioEngine()
         let input = engine.inputNode
         let inputFormat = input.outputFormat(forBus: 0)
@@ -146,6 +202,7 @@ final class AudioRecorder {
             converter: converter, outputFormat: outputFormat,
             inputRate: inputFormat.sampleRate, onLevel: onLevel
         )
+        capture.begin()
         input.installTap(onBus: 0, bufferSize: 4_096, format: inputFormat) { buffer, _ in
             capture.receive(buffer)
         }
@@ -153,6 +210,18 @@ final class AudioRecorder {
             try engine.start()
             self.engine = engine
             self.capture = capture
+            configurationObserver = NotificationCenter.default.addObserver(
+                forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main
+            ) { [weak self] _ in
+                guard let self, let capture = self.capture else { return }
+                if capture.isRecording {
+                    // stop() throws and tears down.
+                    capture.markFailed()
+                } else {
+                    self.tearDown()
+                    self.onCooledDown()
+                }
+            }
         } catch {
             input.removeTap(onBus: 0)
             engine.stop()
@@ -160,20 +229,43 @@ final class AudioRecorder {
         }
     }
 
-    func stop() throws -> Data {
-        guard let engine, let capture else { throw RecordingError.notRecording }
-        engine.inputNode.removeTap(onBus: 0)
-        engine.stop()
-        self.engine = nil
-        self.capture = nil
+    /// With `keepWarm`, the engine keeps running afterwards and fills the pre-roll.
+    func stop(keepWarm: Bool = false) throws -> Data {
+        guard let capture, capture.isRecording else { throw RecordingError.notRecording }
+        if keepWarm {
+            do {
+                return WAV.encode(pcm16: try capture.end())
+            } catch RecordingError.noAudio {
+                throw RecordingError.noAudio
+            } catch {
+                tearDown()
+                throw error
+            }
+        }
+        tearDown()
         return WAV.encode(pcm16: try capture.finish())
     }
 
-    func cancel() {
-        guard let engine else { return }
-        engine.inputNode.removeTap(onBus: 0)
-        engine.stop()
-        self.engine = nil
+    func cancel(keepWarm: Bool = false) {
+        guard let capture, capture.isRecording else { return }
+        if keepWarm && !capture.hasFailed { capture.discard() }
+        else { tearDown() }
+    }
+
+    /// Stops a warm engine; a running recording is left alone.
+    func coolDown() {
+        guard !isRecording else { return }
+        tearDown()
+    }
+
+    private func tearDown() {
+        if let configurationObserver { NotificationCenter.default.removeObserver(configurationObserver) }
+        configurationObserver = nil
+        if let engine {
+            engine.inputNode.removeTap(onBus: 0)
+            engine.stop()
+        }
+        engine = nil
         capture = nil
     }
 }

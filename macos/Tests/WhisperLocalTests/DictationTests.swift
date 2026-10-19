@@ -338,5 +338,110 @@ final class DictationTests: XCTestCase {
         XCTAssertEqual(cancels, 2)
         XCTAssertEqual(dictation.state, .idle)
     }
+
+    func testPostRollStopsAfterDelayThenPlaysStopCue() async {
+        var now: TimeInterval = 0
+        var events: [String] = []
+        let pastedExpectation = expectation(description: "post-roll transcript pasted")
+        let dictation = Dictation(services: DictationServices(
+            startRecording: { events.append("start") },
+            stopRecording: { events.append("stop"); return Data([1]) },
+            cancelRecording: { events.append("cancel") },
+            transcribe: { _ in "hello" },
+            paste: { _ in pastedExpectation.fulfill() },
+            cue: { events.append("cue:\($0)") },
+            clock: { now }
+        ), postRollSeconds: 0.01)
+
+        dictation.pressed()
+        now = 0.4
+        dictation.released()
+        XCTAssertEqual(dictation.state, .transcribing)
+        XCTAssertEqual(events, ["start", "cue:start"])
+
+        await fulfillment(of: [pastedExpectation], timeout: 1)
+        XCTAssertEqual(events, ["start", "cue:start", "stop", "cue:stop"])
+        XCTAssertEqual(dictation.state, .idle)
+    }
+
+    func testPressDuringPostRollFinishesPendingRecordingFirst() async {
+        var now: TimeInterval = 0
+        var recording = 0
+        var events: [String] = []
+        var pasted: [String] = []
+        let bothPasted = expectation(description: "both jobs pasted")
+        bothPasted.expectedFulfillmentCount = 2
+        let dictation = Dictation(services: DictationServices(
+            startRecording: { recording += 1; events.append("start") },
+            stopRecording: { events.append("stop"); return Data([UInt8(recording)]) },
+            cancelRecording: {},
+            transcribe: { $0 == Data([1]) ? "first" : "second" },
+            paste: { pasted.append($0); bothPasted.fulfill() },
+            cue: { events.append("cue:\($0)") },
+            clock: { now }
+        ), postRollSeconds: 0.5)
+
+        dictation.pressed()
+        now = 0.4
+        dictation.released()
+        dictation.pressed()
+        XCTAssertEqual(events, ["start", "cue:start", "stop", "start", "cue:start"])
+        XCTAssertEqual(dictation.state, .listening)
+
+        now = 0.8
+        dictation.released()
+        await fulfillment(of: [bothPasted], timeout: 2)
+        XCTAssertEqual(pasted, ["first", "second"])
+    }
+
+    func testCancelDuringPostRollStillSends() async {
+        var now: TimeInterval = 0
+        var cancels = 0
+        let pastedExpectation = expectation(description: "post-roll transcript pasted")
+        let dictation = Dictation(services: DictationServices(
+            startRecording: {},
+            stopRecording: { Data([1]) },
+            cancelRecording: { cancels += 1 },
+            transcribe: { _ in "hello" },
+            paste: { _ in pastedExpectation.fulfill() },
+            cue: { _ in },
+            clock: { now }
+        ), postRollSeconds: 0.01)
+
+        dictation.pressed()
+        now = 0.4
+        dictation.released()
+        dictation.escaped()
+        dictation.interrupted()
+        dictation.enabled = false
+
+        await fulfillment(of: [pastedExpectation], timeout: 1)
+        XCTAssertEqual(cancels, 0)
+    }
+
+    func testStopErrorAfterPostRollReportsAndGoesIdle() async {
+        var now: TimeInterval = 0
+        var cues: [Cue] = []
+        let reported = expectation(description: "stop error reported")
+        let dictation = Dictation(services: DictationServices(
+            startRecording: {},
+            stopRecording: { throw URLError(.cannotOpenFile) },
+            cancelRecording: {},
+            transcribe: { _ in XCTFail("failed recording uploaded"); return "" },
+            paste: { _ in XCTFail("failed recording pasted") },
+            cue: { cues.append($0) },
+            clock: { now }
+        ), postRollSeconds: 0.01)
+        dictation.onError = { _ in reported.fulfill() }
+
+        dictation.pressed()
+        now = 0.4
+        dictation.released()
+        XCTAssertEqual(dictation.state, .transcribing)
+
+        await fulfillment(of: [reported], timeout: 1)
+        XCTAssertEqual(cues, [.start, .error])
+        XCTAssertEqual(dictation.state, .idle)
+    }
 }
 #endif
