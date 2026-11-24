@@ -1,7 +1,7 @@
 # Whisper Local for macOS
 
-A menu bar app that does what the Linux app does: hold Right Option, speak, let
-go, and the text is pasted where you type. See the [main README](../README.md)
+A menu bar app: hold Right Option, speak, let go, and the text is pasted where
+you type. See the [main README](../README.md)
 for how it behaves and how to run a speech server.
 
 This app is experimental. It has been built and run on macOS 27 with the
@@ -47,10 +47,8 @@ to put Swift Testing and its macro plugin (for `@Test` and `#expect`) on
 the search path; that runs `HeardDictationTests`,
 `KnownWordsTests`, `RecordingCacheTests`, `ReplacementsTests`, `RewordingTests`,
 `RewordKeyTests`, `ScreenContextTests`, `TranscriptionClientTests` and
-`WarmMicTests`.
-`DictationTests` and `EncodingTests` also run under `./check-on-linux.sh` (see
-below), as does `RecordingCacheTests`; `HotkeyTests` needs full Xcode either
-way.
+`WarmMicTests`. `DictationTests`, `EncodingTests` and `HotkeyTests` need
+full Xcode.
 
 ## Permissions
 
@@ -315,8 +313,3 @@ about 2 s or more is kept in
 Recent too, since the speech may still be wanted; the pill says "Recording
 cancelled · kept in menu". Shorter ones, mostly taps of an Option shortcut,
 are discarded.
-
-## Checking changes from Linux
-
-`./check-on-linux.sh` compiles and tests the Foundation-only core in the
-official Swift container with Podman. The AppKit and SwiftUI parts need a Mac.

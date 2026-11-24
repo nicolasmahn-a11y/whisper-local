@@ -4,7 +4,7 @@ import Testing
 
 struct KnownWordsTests {
     @Test func basicMultiLine() {
-        #expect(KnownWords.parse("Qwen\nWhisper Local\nGNOME") == ["Qwen", "Whisper Local", "GNOME"])
+        #expect(KnownWords.parse("Qwen\nWhisper Local\nmacOS") == ["Qwen", "Whisper Local", "macOS"])
     }
 
     @Test func trimsWhitespace() {
@@ -24,7 +24,7 @@ struct KnownWordsTests {
     }
 
     @Test func crlfLineEndings() {
-        #expect(KnownWords.parse("Qwen\r\nWhisper Local\r\nGNOME") == ["Qwen", "Whisper Local", "GNOME"])
+        #expect(KnownWords.parse("Qwen\r\nWhisper Local\r\nmacOS") == ["Qwen", "Whisper Local", "macOS"])
     }
 
     @Test func preservesInnerSpacesOfPhrases() {
@@ -32,11 +32,11 @@ struct KnownWordsTests {
     }
 
     @Test func keepsOrderAndDuplicates() {
-        #expect(KnownWords.parse("Qwen\nQwen\nGNOME") == ["Qwen", "Qwen", "GNOME"])
+        #expect(KnownWords.parse("Qwen\nQwen\nmacOS") == ["Qwen", "Qwen", "macOS"])
     }
 
     @Test func formatJoinsWithNewline() {
-        #expect(KnownWords.format(["Qwen", "Whisper Local", "GNOME"]) == "Qwen\nWhisper Local\nGNOME")
+        #expect(KnownWords.format(["Qwen", "Whisper Local", "macOS"]) == "Qwen\nWhisper Local\nmacOS")
     }
 
     @Test func formatEmptyIsEmptyString() {
@@ -44,7 +44,7 @@ struct KnownWordsTests {
     }
 
     @Test func roundTripForCleanWords() {
-        let words = ["Qwen", "Whisper Local", "GNOME"]
+        let words = ["Qwen", "Whisper Local", "macOS"]
         #expect(KnownWords.parse(KnownWords.format(words)) == words)
     }
 }

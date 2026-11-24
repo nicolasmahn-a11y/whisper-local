@@ -89,7 +89,7 @@ struct ReplacementsTests {
     }
 
     @Test func applyUsesTargetCasingVerbatim() {
-        #expect(apply(["gnome -> GNOME"], "gnome Gnome") == "GNOME GNOME")
+        #expect(apply(["macos -> macOS"], "macos Macos") == "macOS macOS")
     }
 
     @Test func applyReplacesAllOccurrences() {
