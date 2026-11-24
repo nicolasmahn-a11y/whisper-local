@@ -7,8 +7,8 @@ struct CachedRecording: Equatable, Identifiable, Sendable {
     let duration: TimeInterval
 }
 
-/// Keeps finished recordings on disk for a while so a failed transcription
-/// can be retried instead of losing the audio.
+/// Keeps finished recordings on disk for a while so a failed, doubtful or cancelled
+/// take can be transcribed again instead of losing the audio.
 final class RecordingCache {
     static let retention: TimeInterval = 15 * 60
 
@@ -24,18 +24,18 @@ final class RecordingCache {
             .appendingPathComponent("Recordings", isDirectory: true)
     }
 
+    /// Transcribed or cancelled recordings, kept apart so they don't count as unsent.
+    static func recentDirectory() -> URL {
+        defaultDirectory().deletingLastPathComponent().appendingPathComponent("Recent", isDirectory: true)
+    }
+
     init(directory: URL, now: @escaping () -> Date = Date.init) {
         self.directory = directory
         self.now = now
     }
 
     func save(_ wav: Data) throws -> CachedRecording {
-        if !files.fileExists(atPath: directory.path) {
-            try files.createDirectory(
-                at: directory, withIntermediateDirectories: true,
-                attributes: [.posixPermissions: 0o700]
-            )
-        }
+        try createDirectory()
         let milliseconds = Int64((now().timeIntervalSince1970 * 1000).rounded(.down))
         let id = "\(milliseconds)-\(UUID().uuidString)"
         let url = directory.appendingPathComponent(id + ".wav")
@@ -54,6 +54,22 @@ final class RecordingCache {
 
     func remove(_ recording: CachedRecording) {
         try? files.removeItem(at: recording.url)
+    }
+
+    /// Keeps the id, so the recording's age and retention carry over.
+    func move(_ recording: CachedRecording, to destination: RecordingCache) throws -> CachedRecording {
+        try destination.createDirectory()
+        let url = destination.directory.appendingPathComponent(recording.url.lastPathComponent)
+        try files.moveItem(at: recording.url, to: url)
+        return CachedRecording(id: recording.id, url: url, recordedAt: recording.recordedAt, duration: recording.duration)
+    }
+
+    private func createDirectory() throws {
+        guard !files.fileExists(atPath: directory.path) else { return }
+        try files.createDirectory(
+            at: directory, withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
     }
 
     /// Expired entries whose id is in `protecting` are kept on disk and still returned.

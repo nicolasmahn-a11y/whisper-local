@@ -158,6 +158,32 @@ struct RecordingCacheTests {
         }
     }
 
+    @Test func moveTransfersFileToMissingDestinationKeepingMetadataAndPermissions() throws {
+        try withCache { source, clock, _ in
+            let destDir = makeTempDirectory()  // never created
+            defer { try? FileManager.default.removeItem(at: destDir) }
+            let destination = RecordingCache(directory: destDir, now: clock.now)
+
+            let wav = WAV.encode(pcm16: pcm(seconds: 2))
+            let entry = try source.save(wav)
+
+            let moved = try source.move(entry, to: destination)
+
+            #expect(moved.id == entry.id)
+            #expect(moved.recordedAt == entry.recordedAt)
+            #expect(moved.duration == entry.duration)
+            #expect(moved.url.deletingLastPathComponent().standardizedFileURL.path == destDir.standardizedFileURL.path)
+            #expect(!FileManager.default.fileExists(atPath: entry.url.path))
+            #expect(source.recordings() == [])
+            #expect(destination.recordings() == [moved])
+            #expect(try destination.load(moved) == wav)
+
+            let attributes = try FileManager.default.attributesOfItem(atPath: moved.url.path)
+            let permissions = attributes[.posixPermissions] as? NSNumber
+            #expect(permissions?.intValue == 0o600)
+        }
+    }
+
     @Test func protectedExpiredEntryIsKeptAndReturned() throws {
         try withCache { cache, clock, _ in
             let wav = WAV.encode(pcm16: pcm(seconds: 1))

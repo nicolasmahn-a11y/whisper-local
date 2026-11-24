@@ -2,8 +2,12 @@ import AppKit
 import ApplicationServices
 import AVFoundation
 import CoreGraphics
+import OSLog
 import ServiceManagement
 import SwiftUI
+
+/// `log stream --predicate 'subsystem == "io.github.nicolasmahn.WhisperLocal"'` shows how long qwen3-omni-30b took, or why it failed.
+private let heardLog = Logger(subsystem: "io.github.nicolasmahn.WhisperLocal", category: "heard")
 
 enum SettingsPane: Equatable {
     case inputMonitoring
@@ -85,6 +89,7 @@ final class AppModel: ObservableObject {
         }
     }
     @Published private(set) var unsentRecordings: [CachedRecording] = []
+    @Published private(set) var recentRecordings: [CachedRecording] = []
     @Published private(set) var problem: Problem? = nil
     /// Separate from `problem`: screenshots are optional, so dictation and the menu bar icon stay normal.
     @Published private(set) var screenProblem: Problem? = nil
@@ -176,6 +181,7 @@ final class AppModel: ObservableObject {
         didSet { defaults.set(rewordClaudeFallback, forKey: "rewordClaudeFallback") }
     }
     @Published private(set) var rewordAPIKey: String
+    @Published private(set) var adminAPIKey: String
 
     private let defaults = UserDefaults.standard
     private lazy var recorder = AudioRecorder(onLevel: { [weak self] level in
@@ -190,13 +196,20 @@ final class AppModel: ObservableObject {
     private var showsRewording = false {
         didSet { updateOverlay() }
     }
+    /// Unsent: transcription failed.
     private let cache = RecordingCache(directory: RecordingCache.defaultDirectory())
+    /// Transcribed or cancelled, so a bad transcript or an accidental cancel can be redone.
+    private let recent = RecordingCache(directory: RecordingCache.recentDirectory())
+    /// Shorter cancelled takes are mostly accidental taps, e.g. of an Option shortcut.
+    private static let minimumKeptSeconds: TimeInterval = 2
     private var overlay: DictationOverlay?
     private var hotkey: HotkeyMonitor?
     private var permissionProblem: Problem?
     private var transientProblem: Problem?
     private var clearProblemTask: Task<Void, Never>?
     private var notice: String?
+    /// One notice per outage of the heard-dictation path; cleared when it works again.
+    private var heardNoticeShown = false
     private var clearNoticeTask: Task<Void, Never>?
     private var uploadingIDs: Set<String> = []
     private var retryingIDs: Set<String> = [] {
@@ -218,12 +231,14 @@ final class AppModel: ObservableObject {
             stopRecording: { [weak self, recorder] in
                 defer { self?.recordingEnded() }
                 let wav = try recorder.stop(keepWarm: self?.keepsMicWarm ?? false)
-                self?.queueCleanupScreen()
+                self?.queueDictationScreen(for: wav)
                 return wav
             },
             cancelRecording: { [weak self, recorder] in
-                recorder.cancel(keepWarm: self?.keepsMicWarm ?? false)
-                self?.recordingEnded()
+                defer { self?.recordingEnded() }
+                // Same warm-or-tear-down handling as `cancel`, but the audio survives.
+                guard let wav = try? recorder.stop(keepWarm: self?.keepsMicWarm ?? false) else { return }
+                self?.keepCancelled(wav)
             },
             transcribe: { [weak self] wav in
                 guard let self else { throw CancellationError() }
@@ -266,6 +281,7 @@ final class AppModel: ObservableObject {
         autoReword = stored.object(forKey: "autoReword") as? Bool ?? false
         rewordClaudeFallback = stored.object(forKey: "rewordClaudeFallback") as? Bool ?? true
         rewordAPIKey = Keychain.value(for: "rewordAPIKey") ?? ""
+        adminAPIKey = Keychain.value(for: "adminAPIKey") ?? ""
         let status = SMAppService.mainApp.status
         launchAtLogin = status == .enabled || status == .requiresApproval
         Task { [weak self] in await self?.start() }
@@ -323,7 +339,7 @@ final class AppModel: ObservableObject {
         }
         do {
             let text = try await send(wav, screen: nil)
-            cache.remove(recording)
+            keepAsRecent(recording)
             refreshRecordings()
             if text.isEmpty {
                 show(notice: "No speech in recording")
@@ -354,7 +370,7 @@ final class AppModel: ObservableObject {
         }
         do {
             let text = try await send(wav, screen: screen)
-            if let saved { cache.remove(saved) }
+            if let saved { keepAsRecent(saved) }
             return text
         } catch {
             guard let saved else { throw error }
@@ -365,17 +381,95 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Taken when a dictation finishes, while its target field still has focus, for that job's cleanup.
-    private func queueCleanupScreen() {
-        jobScreens.append(autoReword && cleanupScreenshot ? Task { await ScreenCapture.focusedArea() } : nil)
+    /// A model can return a plausible but wrong transcript, so the audio stays for "Transcribe Again".
+    private func keepAsRecent(_ recording: CachedRecording) {
+        guard (try? cache.move(recording, to: recent)) == nil else { return }
+        // Left in place it would count as unsent and prompt for a retry it doesn't need.
+        cache.remove(recording)
+    }
+
+    /// Another key or Esc cancels mid-sentence; the speech may still be wanted.
+    private func keepCancelled(_ wav: Data) {
+        guard WAV.duration(of: wav) >= Self.minimumKeptSeconds, (try? recent.save(wav)) != nil else { return }
+        refreshRecordings()
+        // The recording is listed either way; an error still on screen matters more.
+        guard transientProblem == nil else { return }
+        show(notice: "Recording cancelled · kept in menu")
+    }
+
+    /// Whisper, not the heard model: that model may be what produced the bad transcript.
+    /// The recording stays in recent, so it can be tried again.
+    func transcribeAgain(_ recording: CachedRecording) async {
+        guard !retryingIDs.contains(recording.id) else { return }
+        retryingIDs.insert(recording.id)
+        defer { retryingIDs.remove(recording.id) }
+        let wav: Data
+        do {
+            wav = try recent.load(recording)
+        } catch {
+            refreshRecordings()
+            return report(AppIssue.recordingMissing)
+        }
+        do {
+            let text = try await sendToSpeechServer(wav, screen: nil)
+            if text.isEmpty {
+                show(notice: "No speech in recording")
+            } else if copy(text) {
+                show(notice: "Transcript copied")
+            }
+        } catch {
+            report(error)
+        }
+    }
+
+    /// Taken when a dictation finishes, while its target field still has focus, for that job's model requests.
+    private func queueDictationScreen(for wav: Data) {
+        let used = autoReword || WAV.duration(of: wav) <= HeardDictation.maxSeconds
+        jobScreens.append(cleanupScreenshot && used ? Task { await ScreenCapture.focusedArea() } : nil)
     }
 
     private func send(_ wav: Data, screen: ScreenTask?) async throws -> String {
+        let rules = Replacements.rules(from: replacements)
+        if WAV.duration(of: wav) <= HeardDictation.maxSeconds {
+            let shot = await screen?.value
+            noteScreenFailure(shot)
+            let request = HeardRequest(
+                wav: wav, language: language, vocabulary: vocabulary,
+                style: autoReword ? .cleanedUp : .verbatim, screenshot: try? shot?.get()
+            )
+            let start = Date()
+            do {
+                let heard = try await rewordClient.transcribe(
+                    request, serverURL: rewordServerURL, apiKey: rewordAPIKey
+                )
+                heardLog.info("heard in \(Date().timeIntervalSince(start), format: .fixed(precision: 1)) s")
+                // An empty answer may be a model that missed the audio, not silence; Whisper decides.
+                if !heard.isEmpty {
+                    heardNoticeShown = false
+                    return Replacements.apply(rules, to: heard)
+                }
+            } catch RewordError.response(503) {
+                startHeardModel()
+            } catch let error as RewordError where error == .unauthorized || error == .invalidURL {
+                showHeardNotice("\(error.localizedDescription) — using Whisper")
+            } catch {
+                // Whisper below still delivers the dictation.
+                heardLog.error("heard failed after \(Date().timeIntervalSince(start), format: .fixed(precision: 1)) s: \(error.localizedDescription, privacy: .public)")
+            }
+            // URLSession reports cancellation as a transport error, so check before falling back.
+            try Task.checkCancellation()
+        }
+        return try await sendToSpeechServer(wav, screen: screen)
+    }
+
+    /// Whisper, then cleanup when "Clean up every dictation" is on.
+    private func sendToSpeechServer(_ wav: Data, screen: ScreenTask?) async throws -> String {
+        let rules = Replacements.rules(from: replacements)
         let text = try await client.transcribe(
             wav: wav, serverURL: serverURL, apiKey: apiKey,
             language: language, knownWords: knownWords
         )
-        let replaced = Replacements.apply(Replacements.rules(from: replacements), to: text)
+        let replaced = Replacements.apply(rules, to: text)
         guard autoReword, !replaced.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               replaced.count <= Rewording.maxCharacters else { return replaced }
         let shot = await screen?.value
@@ -385,7 +479,7 @@ final class AppModel: ObservableObject {
                 screenshot: try? shot?.get()
             )
             noteScreenFailure(shot)
-            return Replacements.apply(Replacements.rules(from: replacements), to: cleaned)
+            return Replacements.apply(rules, to: cleaned)
         } catch {
             // Cleanup is best effort: keep the raw transcript.
             try Task.checkCancellation()
@@ -445,6 +539,7 @@ final class AppModel: ObservableObject {
     private func refreshRecordings() {
         unsentRecordings = cache.recordings(protecting: uploadingIDs.union(retryingIDs))
             .filter { !uploadingIDs.contains($0.id) }
+        recentRecordings = recent.recordings(protecting: retryingIDs)
     }
 
     private func offerUnsentRecordings() {
@@ -555,6 +650,40 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func updateAdminAPIKey(_ value: String) {
+        do {
+            try Keychain.set(value, for: "adminAPIKey")
+            adminAPIKey = value
+        } catch {
+            report(AppIssue.apiKey)
+        }
+    }
+
+    /// The gateway answers 503 while the model is off; start it so later dictations use it again.
+    /// Errors are notices, not problems: this dictation still succeeds through Whisper.
+    private func startHeardModel() {
+        let serverURL = rewordServerURL, adminKey = adminAPIKey
+        guard !adminKey.isEmpty else { return }
+        Task { [weak self] in
+            do {
+                try await ModelControl().start(HeardDictation.model, serverURL: serverURL, adminKey: adminKey)
+                self?.showHeardNotice("Starting \(HeardDictation.model); using Whisper meanwhile")
+            } catch ModelStartError.busy {
+                // An earlier dictation already started it.
+            } catch {
+                self?.showHeardNotice(error.localizedDescription)
+            }
+        }
+    }
+
+    /// Every dictation in an outage hits the same error; say it once, and never over a live problem,
+    /// which a notice would clear.
+    private func showHeardNotice(_ text: String) {
+        guard !heardNoticeShown, transientProblem == nil else { return }
+        heardNoticeShown = true
+        show(notice: text)
+    }
+
     /// Reword key tapped: copy the selection (or the whole field), reword it, paste the result over it.
     func rewordSelection() async {
         guard !rewordInFlight, state == .idle, retryingIDs.isEmpty else { return }
@@ -623,9 +752,7 @@ final class AppModel: ObservableObject {
         style: RewordStyle, chatTimeout: TimeInterval = 60, claude useClaude: Bool = true
     ) -> RewordServices {
         let client = rewordClient, serverURL = rewordServerURL, apiKey = rewordAPIKey
-        let vocabulary = Vocabulary(
-            knownWords: knownWords, replacements: Replacements.rules(from: replacements),
-            instructions: rewordInstructions)
+        let vocabulary = vocabulary
         let claude = useClaude && rewordClaudeFallback ? ClaudeCLI.locate() : nil
         let cache = rewordModels
         return RewordServices(
@@ -650,6 +777,12 @@ final class AppModel: ObservableObject {
                 { text in try await ClaudeCLI.reword(text, executable: executable, vocabulary: vocabulary, style: style) }
             }
         )
+    }
+
+    private var vocabulary: Vocabulary {
+        Vocabulary(
+            knownWords: knownWords, replacements: Replacements.rules(from: replacements),
+            instructions: rewordInstructions)
     }
 
     /// So the synthetic ⌘C isn't merged with held modifiers.
@@ -690,7 +823,7 @@ final class AppModel: ObservableObject {
     private func noteScreenFailure(_ shot: Result<Data, ScreenCapture.Failure>?) {
         switch shot {
         case .failure(.permission)?: refreshScreenProblem()
-        case .failure(.capture)?: show(notice: "Reworded without screen — screen capture failed")
+        case .failure(.capture)?: show(notice: "Sent without screen — screen capture failed")
         default: break
         }
     }

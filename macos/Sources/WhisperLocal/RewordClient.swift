@@ -1,4 +1,7 @@
 import Foundation
+import OSLog
+
+private let rewordLog = Logger(subsystem: "io.github.nicolasmahn.WhisperLocal", category: "reword")
 
 struct RewordClient {
     var session: URLSession = .shared
@@ -55,6 +58,48 @@ struct RewordClient {
         return (try? JSONEncoder().encode(request)) ?? Data()
     }
 
+    /// "" when the recording is silent.
+    func transcribe(_ request: HeardRequest, serverURL: String, apiKey: String) async throws -> String {
+        let seconds = WAV.duration(of: request.wav)
+        var urlRequest = URLRequest(url: try endpoint(serverURL, "chat/completions"))
+        urlRequest.httpMethod = "POST"
+        urlRequest.timeoutInterval = HeardDictation.timeout
+        urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        urlRequest.httpBody = Self.heardRequestBody(request)
+        let data = try await send(urlRequest, apiKey: apiKey)
+        guard let completion = try? JSONDecoder().decode(Completion.self, from: data),
+              let content = completion.choices.first?.message.content else { throw RewordError.invalidJSON }
+        let text = Rewording.clean(content)
+        guard !HeardDictation.isRunaway(text, seconds: seconds) else { throw RewordError.runaway }
+        // Empty stays a result: the caller lets Whisper decide whether the recording was silent.
+        guard text.isEmpty || !HeardDictation.isTruncated(text, seconds: seconds) else {
+            throw RewordError.truncated
+        }
+        return text
+    }
+
+    static func heardRequestBody(_ request: HeardRequest) -> Data {
+        var parts: [Part] = request.screenshot.map {
+            [Part(type: "image_url", imageURL: ImageURL(url: "data:image/png;base64," + $0.base64EncodedString()))]
+        } ?? []
+        parts.append(Part(type: "text", text: HeardDictation.instruction(language: request.language)))
+        parts.append(Part(
+            type: "input_audio",
+            inputAudio: InputAudio(data: request.wav.base64EncodedString(), format: "wav")
+        ))
+        let body = ChatRequest(
+            model: HeardDictation.model,
+            messages: [
+                Message(role: "system", content: .text(HeardDictation.systemPrompt(for: request))),
+                Message(role: "user", content: .parts(parts)),
+            ],
+            temperature: 0.2,
+            // Qwen3-Omni's template doesn't think, and with this flag it leaks "Assistant:" or goes blank.
+            chatTemplateKwargs: nil
+        )
+        return (try? JSONEncoder().encode(body)) ?? Data()
+    }
+
     private func send(_ request: URLRequest, apiKey: String) async throws -> Data {
         var request = request
         if !apiKey.isEmpty {
@@ -68,8 +113,14 @@ struct RewordClient {
             throw RewordError.unreachable
         }
         guard let http = response as? HTTPURLResponse else { throw RewordError.invalidJSON }
-        if http.statusCode == 401 || http.statusCode == 403 { throw RewordError.unauthorized }
-        guard (200..<300).contains(http.statusCode) else { throw RewordError.response(http.statusCode) }
+        guard (200..<300).contains(http.statusCode) else {
+            // The body names the model and the reason (e.g. "not running"); the status code alone hides both.
+            let path = request.url?.path ?? ""
+            let body = String(decoding: data.prefix(500), as: UTF8.self)
+            rewordLog.error("HTTP \(http.statusCode) from \(path, privacy: .public): \(body, privacy: .public)")
+            if http.statusCode == 401 || http.statusCode == 403 { throw RewordError.unauthorized }
+            throw RewordError.response(http.statusCode)
+        }
         return data
     }
 
@@ -113,14 +164,21 @@ struct RewordClient {
         let type: String
         var text: String?
         var imageURL: ImageURL?
+        var inputAudio: InputAudio?
 
         enum CodingKeys: String, CodingKey {
             case type, text
             case imageURL = "image_url"
+            case inputAudio = "input_audio"
         }
     }
 
     private struct ImageURL: Encodable { let url: String }
+
+    private struct InputAudio: Encodable {
+        let data: String
+        let format: String
+    }
 
     private struct TemplateOptions: Encodable {
         let enableThinking: Bool
@@ -131,7 +189,7 @@ struct RewordClient {
         let model: String
         let messages: [Message]
         let temperature: Double
-        let chatTemplateKwargs: TemplateOptions
+        let chatTemplateKwargs: TemplateOptions?
         enum CodingKeys: String, CodingKey {
             case model, messages, temperature
             case chatTemplateKwargs = "chat_template_kwargs"

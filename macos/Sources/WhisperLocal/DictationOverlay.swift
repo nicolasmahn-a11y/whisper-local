@@ -13,7 +13,9 @@ private final class OverlayDisplay: ObservableObject {
     @Published var level = 0.0
     @Published var keyName = "Right Option"
     @Published var message: OverlayMessage?
+    @Published var listeningSince = Date()
     @Published var transcribingSince = Date()
+    @Published var rewordingSince = Date()
     @Published var rewording = false
 }
 
@@ -44,13 +46,16 @@ final class DictationOverlay {
 
     func update(state: DictationState, level: Double, keyName: String, message: OverlayMessage?, rewording: Bool = false) {
         let stateChanged = display.state != state || display.rewording != rewording
+        let listening = state == .listening || state == .handsFree
         if stateChanged {
+            // Every recording starts from idle or transcribing, never from another listening state.
+            if listening { display.listeningSince = Date() }
             if state == .transcribing && display.state != state { display.transcribingSince = Date() }
+            if rewording && !display.rewording { display.rewordingSince = Date() }
             display.state = state
             display.rewording = rewording
         }
-        display.level = state == .listening || state == .handsFree
-            ? display.level * 0.65 + level * 0.35 : 0
+        display.level = listening ? display.level * 0.65 + level * 0.35 : 0
         if display.keyName != keyName { display.keyName = keyName }
         if display.message != message { display.message = message }
 
@@ -111,32 +116,28 @@ private struct OverlayView: View {
             } else {
                 switch display.state {
                 case .listening, .handsFree:
-                    LevelBars(level: display.level, color: DictationStyle.current(
-                        state: display.state, enabled: true, hasProblem: false
-                    ).color)
+                    let color = DictationStyle.current(state: display.state, enabled: true, hasProblem: false).color
+                    TimedIndicator(since: display.listeningSince, label: "Listening") { edge in
+                        LevelBars(level: display.level, color: color, edge: edge)
+                    }
                     if display.state == .handsFree {
+                        Capsule()
+                            .fill(Theme.neutralMuted.opacity(0.4))
+                            .frame(width: 1, height: 16)
                         Text("Tap \(display.keyName) to finish · Esc to cancel")
                             .font(.system(size: 12))
-                            .foregroundStyle(Theme.neutralStrong)
+                            .foregroundStyle(Theme.neutralMuted)
                             .lineLimit(1)
-                    } else {
-                        StatusText(text: "Listening")
                     }
                 case .transcribing:
-                    BusyDots(color: DictationStyle.current(
-                        state: .transcribing, enabled: true, hasProblem: false
-                    ).color)
-                    TimelineView(.periodic(from: display.transcribingSince, by: 1)) { context in
-                        StatusText(text: "Transcribing… " + RecordingFormat.elapsed(
-                            context.date.timeIntervalSince(display.transcribingSince)
-                        ))
+                    TimedIndicator(since: display.transcribingSince, label: "Transcribing") { edge in
+                        BusyDots(color: busyColor, edge: edge)
                     }
                 case .idle:
                     if display.rewording {
-                        BusyDots(color: DictationStyle.current(
-                            state: .transcribing, enabled: true, hasProblem: false
-                        ).color, label: "Rewording")
-                        StatusText(text: "Rewording…")
+                        TimedIndicator(since: display.rewordingSince, label: "Rewording") { edge in
+                            BusyDots(color: busyColor, edge: edge)
+                        }
                     }
                 }
             }
@@ -146,17 +147,34 @@ private struct OverlayView: View {
         .background(.ultraThinMaterial, in: Capsule())
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
+
+    private var busyColor: Color {
+        DictationStyle.current(state: .transcribing, enabled: true, hasProblem: false).color
+    }
 }
 
-private struct StatusText: View {
-    let text: String
+/// The elapsed time framed by a mirrored pair of animated sides, so the indicator alone says
+/// what is happening and the timer says for how long — no status words needed.
+private struct TimedIndicator<Side: View>: View {
+    let since: Date
+    let label: String
+    @ViewBuilder let side: (HorizontalEdge) -> Side
 
     var body: some View {
-        Text(text)
-            .font(.system(size: 13, weight: .medium))
-            .monospacedDigit()
-            .foregroundStyle(Theme.neutralStrong)
-            .lineLimit(1)
+        TimelineView(.periodic(from: since, by: 1)) { context in
+            let elapsed = RecordingFormat.elapsed(context.date.timeIntervalSince(since))
+            HStack(spacing: 10) {
+                side(.leading)
+                Text(elapsed)
+                    .font(.system(size: 14, weight: .semibold, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(Theme.neutralStrong)
+                    .lineLimit(1)
+                side(.trailing)
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("\(label), \(elapsed)")
+        }
     }
 }
 
@@ -174,9 +192,12 @@ private struct MessageText: View {
 private struct LevelBars: View {
     let level: Double
     let color: Color
-    private let weights = [0.42, 0.68, 0.86, 1.0, 0.82, 0.62, 0.38]
+    let edge: HorizontalEdge
+    /// Tallest next to the timer, so the voice reads as radiating outward from it.
+    private let weightsFromTimer = [1.0, 0.78, 0.56, 0.36]
 
     var body: some View {
+        let weights = edge == .leading ? weightsFromTimer.reversed() : weightsFromTimer
         HStack(alignment: .center, spacing: 4) {
             ForEach(weights.indices, id: \.self) { index in
                 Capsule()
@@ -186,27 +207,27 @@ private struct LevelBars: View {
         }
         .frame(height: 30)
         .animation(.easeOut(duration: 0.12), value: level)
-        .accessibilityLabel("Audio level")
     }
 }
 
 private struct BusyDots: View {
     let color: Color
-    var label = "Transcribing"
+    let edge: HorizontalEdge
 
     var body: some View {
         TimelineView(.animation(minimumInterval: 0.16)) { context in
             let phase = context.date.timeIntervalSinceReferenceDate * 3
             HStack(spacing: 6) {
                 ForEach(0..<3) { index in
+                    // Both sides pulse outward from the timer in step.
+                    let distance = edge == .leading ? 2 - index : index
                     Circle()
                         .fill(color)
                         .frame(width: 6, height: 6)
-                        .opacity(0.3 + 0.7 * (1 + sin(phase - Double(index) * 0.8)) / 2)
+                        .opacity(0.3 + 0.7 * (1 + sin(phase - Double(distance) * 0.8)) / 2)
                 }
             }
         }
         .frame(height: 30)
-        .accessibilityLabel(label)
     }
 }

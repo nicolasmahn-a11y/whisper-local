@@ -2,7 +2,9 @@
 
 Hold a key, speak, let go, and the words appear where you are typing, like a
 local Wispr Flow. The speech is recognised by Qwen3-ASR on your own machine or
-another one on your network, not in someone else's cloud.
+another one on your network, not in someone else's cloud. On macOS,
+recordings up to 60 s go to `qwen3-omni-30b` on your model server first; see
+[macos/README.md](macos/README.md#dictation-heard-by-qwen3-omni-30b).
 
 On Linux it is a GNOME app, a top-bar extension and a small pill at the bottom
 of the screen that shows the sound level while you speak. On macOS it is a
@@ -13,7 +15,8 @@ as widely tested as the Linux app.
 ## The speech server
 
 whisper-local does not run the model itself. It sends each recording to any
-OpenAI-compatible `/v1/audio/transcriptions` endpoint, for example vLLM:
+OpenAI-compatible `/v1/audio/transcriptions` endpoint (on macOS, each
+recording longer than 60 s or that `qwen3-omni-30b` fails on), for example vLLM:
 
     vllm serve Qwen/Qwen3-ASR-1.7B --served-model-name qwen3-asr
 
@@ -62,7 +65,9 @@ in normal text fields.
   text is pasted a moment later.
 - Presses shorter than 0.3 s are ignored, so a tap sends nothing.
 - Pressing any other key while holding cancels the recording, so Right Ctrl+C
-  and other shortcuts keep working. Esc cancels too.
+  and other shortcuts keep working. Esc cancels too. On macOS a cancelled
+  recording of 2 s or more stays in the menu for 15 minutes, in case you
+  still want it.
 - For hands-free speech, double-tap the dictation key, or choose a separate
   hands-free key in settings (that turns double-tap off). Other keys do not
   cancel it, so you can type or walk away. Tap the key again to finish, or
@@ -118,7 +123,9 @@ apply to the next recording without a restart.
 
 ## Privacy and security
 
-- Audio goes only to the server URL you configure, and nowhere else.
+- Audio goes only to the server URLs you configure, and nowhere else: the
+  speech server, and on macOS also the rewording server for recordings up
+  to 60 s.
 - On macOS, with "Keep microphone ready" on, the microphone records
   continuously until an hour after the last dictation, but only the last
   0.75 s is kept, in memory, and it is sent only as the start of your next
@@ -127,9 +134,11 @@ apply to the next recording without a restart.
   that fails and the Claude fallback is on, it goes to Anthropic through the
   `claude` CLI instead. With "Clean up every dictation" on, every transcript
   also goes to the rewording server, but never to Claude. With "Send
-  screenshot with reword" or "Send screenshot with cleanup" on (the
+  screenshot with reword" or "Send screenshot with dictation" on (the
   default), a screenshot of the area around the text field goes along, to
   the rewording server only, never to Claude; it is never written to disk.
+  The optional admin key, used only to start `qwen3-omni-30b` when it is off,
+  is sent only over HTTPS or to localhost.
 - Over plain HTTP on a network, anyone else on that network can read the audio,
   the transcripts and the API key. Use HTTPS, or keep the server on the same
   machine, if that matters to you.

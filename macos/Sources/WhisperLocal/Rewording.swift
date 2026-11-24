@@ -12,6 +12,7 @@ enum RewordError: LocalizedError, Equatable {
     case claudeFailed
     case tooLong
     case runaway
+    case truncated
 
     var errorDescription: String? {
         switch self {
@@ -26,6 +27,7 @@ enum RewordError: LocalizedError, Equatable {
         case .claudeFailed: "Claude rewording failed"
         case .tooLong: "Too much text to reword"
         case .runaway: "Rewording went off track"
+        case .truncated: "Transcript missed most of the recording"
         }
     }
 }
@@ -90,7 +92,7 @@ enum Rewording {
         return withScreen ? base + "\n\n" + screenContextPrompt : base
     }
 
-    private static func vocabularySuffix(_ vocabulary: Vocabulary, style: RewordStyle) -> String {
+    static func vocabularySuffix(_ vocabulary: Vocabulary, style: RewordStyle) -> String {
         var seen = Set<String>()
         let words = vocabulary.knownWords
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }

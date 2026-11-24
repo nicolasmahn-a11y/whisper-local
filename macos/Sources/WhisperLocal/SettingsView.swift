@@ -144,7 +144,7 @@ private struct RewordingPane: View {
             }
             Section {
                 Toggle("Send screenshot with reword", isOn: $model.rewordScreenshot)
-                Toggle("Send screenshot with cleanup", isOn: $model.cleanupScreenshot)
+                Toggle("Send screenshot with dictation", isOn: $model.cleanupScreenshot)
             } header: {
                 Text("Screenshots")
             } footer: {
@@ -156,13 +156,18 @@ private struct RewordingPane: View {
                     get: { model.rewordAPIKey },
                     set: { model.updateRewordAPIKey($0) }
                 ), prompt: Text("Optional"))
+                SecureField("Admin key", text: Binding(
+                    get: { model.adminAPIKey },
+                    set: { model.updateAdminAPIKey($0) }
+                ), prompt: Text("Optional"))
                 Toggle("Fall back to Claude Haiku", isOn: $model.rewordClaudeFallback)
             } header: {
                 Text("Model server")
             } footer: {
-                Text(claudeAvailable
+                Text((claudeAvailable
                     ? "The fallback sends the text to Anthropic through the claude CLI."
                     : "Fallback unavailable: claude CLI not found.")
+                    + " The admin key only starts \(HeardDictation.model) when it is off, and is sent only over HTTPS or to localhost.")
             }
         }
         .fixedSize(horizontal: false, vertical: true)

@@ -48,6 +48,16 @@ private struct MenuContent: View {
                     }
                 }
             }
+            if !model.recentRecordings.isEmpty {
+                Section("Recent recordings") {
+                    ForEach(model.recentRecordings) { recording in
+                        Menu(RecordingFormat.label(for: recording)) {
+                            Button("Transcribe Again and Copy") { Task { await model.transcribeAgain(recording) } }
+                            Button("Discard") { model.discard(recording) }
+                        }
+                    }
+                }
+            }
             if let problem = model.problem {
                 if problem.pane == nil {
                     Text(problem.text)
