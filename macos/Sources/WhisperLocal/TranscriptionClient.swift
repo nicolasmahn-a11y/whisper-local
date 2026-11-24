@@ -11,11 +11,11 @@ enum SpeechError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .invalidURL: "Invalid server URL"
-        case .unreachable: "Speech server unreachable"
+        case .unreachable: "Backup server unreachable"
         case .unauthorized: "API key rejected"
-        case .response(let code): "Speech server returned HTTP \(code)"
-        case .invalidJSON: "Invalid response from speech server"
-        case .network: "Speech server request failed"
+        case .response(let code): "Backup server returned HTTP \(code)"
+        case .invalidJSON: "Invalid response from backup server"
+        case .network: "Backup server request failed"
         }
     }
 }

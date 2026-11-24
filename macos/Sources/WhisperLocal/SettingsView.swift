@@ -55,7 +55,22 @@ private struct DictationPane: View {
 
     var body: some View {
         Form {
-            Section("Speech server") {
+            Section {
+                TextField("Server URL", text: $model.rewordServerURL, prompt: Text("http://localhost:8400/v1"))
+                SecureField("API key", text: Binding(
+                    get: { model.rewordAPIKey },
+                    set: { model.updateRewordAPIKey($0) }
+                ), prompt: Text("Optional"))
+                SecureField("Admin key", text: Binding(
+                    get: { model.adminAPIKey },
+                    set: { model.updateAdminAPIKey($0) }
+                ), prompt: Text("Optional"))
+            } header: {
+                Text("Model server")
+            } footer: {
+                Text("Hears dictations up to \(Int(HeardDictation.maxSeconds)) s with \(HeardDictation.model) and does the rewording. The admin key only starts \(HeardDictation.model) when it is off, and is sent only over HTTPS or to localhost.")
+            }
+            Section {
                 TextField("Server URL", text: $model.serverURL, prompt: Text("http://localhost:8178/v1"))
                     .onSubmit { Task { await model.checkReachability() } }
                 SecureField("API key", text: Binding(
@@ -63,6 +78,10 @@ private struct DictationPane: View {
                     set: { model.updateAPIKey($0) }
                 ), prompt: Text("Optional"))
                 connectionRow
+            } header: {
+                Text("Backup server")
+            } footer: {
+                Text("Whisper, for dictations longer than \(Int(HeardDictation.maxSeconds)) s and whenever the model server fails.")
             }
             Section("Keys") {
                 Picker("Dictation key", selection: $model.key) {
@@ -109,9 +128,9 @@ private struct DictationPane: View {
 
     private var connectionText: String {
         switch model.serverReachable {
-        case true: "Server reachable"
-        case false: "Server unreachable"
-        case nil: "Checking server…"
+        case true: "Backup server reachable"
+        case false: "Backup server unreachable"
+        case nil: "Checking backup server…"
         }
     }
 }
@@ -151,23 +170,13 @@ private struct RewordingPane: View {
                 Text("Shows the model the area around the text field, so names on screen come out right. Screenshots go only to the model server, never to Claude, and add about a second.")
             }
             Section {
-                TextField("Server URL", text: $model.rewordServerURL, prompt: Text("http://localhost:8400/v1"))
-                SecureField("API key", text: Binding(
-                    get: { model.rewordAPIKey },
-                    set: { model.updateRewordAPIKey($0) }
-                ), prompt: Text("Optional"))
-                SecureField("Admin key", text: Binding(
-                    get: { model.adminAPIKey },
-                    set: { model.updateAdminAPIKey($0) }
-                ), prompt: Text("Optional"))
                 Toggle("Fall back to Claude Haiku", isOn: $model.rewordClaudeFallback)
             } header: {
-                Text("Model server")
+                Text("Fallback")
             } footer: {
-                Text((claudeAvailable
-                    ? "The fallback sends the text to Anthropic through the claude CLI."
+                Text(claudeAvailable
+                    ? "When the model server (Settings › Dictation) fails, sends the text to Anthropic through the claude CLI."
                     : "Fallback unavailable: claude CLI not found.")
-                    + " The admin key only starts \(HeardDictation.model) when it is off, and is sent only over HTTPS or to localhost.")
             }
         }
         .fixedSize(horizontal: false, vertical: true)
@@ -197,7 +206,7 @@ private struct VocabularyPane: View {
             } header: {
                 header("Known words", count: model.knownWords.count)
             } footer: {
-                Text("Sent to the speech server as context so names and jargon are recognised.")
+                Text("Sent with every dictation as context so names and jargon are recognised.")
             }
             Section {
                 VocabularyList(lines: $model.replacements) { line, remove in

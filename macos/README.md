@@ -2,7 +2,7 @@
 
 A menu bar app: hold Right Option, speak, let go, and the text is pasted where
 you type. See the [main README](../README.md)
-for how it behaves and how to run a speech server.
+for how it behaves and how to run a backup server.
 
 This app is experimental. It has been built and run on macOS 27 with the
 Command Line Tools' Swift 6.4; expect rough edges, and please report what
@@ -79,9 +79,11 @@ on screen without scrolling: General, Dictation, Vocabulary and Rewording.
 General has Enabled (the same switch as in the menu, which turns the keys
 off without quitting), sounds and launch at login.
 
-Dictation has the speech server, the dictation and hands-free keys, the
+Dictation has the Model server (URL, API key and Admin key; see
+[Dictation heard by qwen3-omni-30b](#dictation-heard-by-qwen3-omni-30b)),
+the backup server, the dictation and hands-free keys, the
 language, and "Keep microphone ready for an hour after dictating" (see
-below). Server URL defaults to `http://localhost:8178/v1`; the API key is
+below). The backup server URL defaults to `http://localhost:8178/v1`; the API key is
 optional and kept in the Keychain, and stays on the configured server
 through redirects. The app asks for the model `qwen3-asr`, so serve it
 under that name (see the main README). A dot next to Check connection shows
@@ -103,8 +105,7 @@ never split it."
 Rewording has the reword key and whether to reword the whole field when
 nothing is selected, "Clean up every dictation", the two screenshot
 toggles ("Send screenshot with reword" and "Send screenshot with
-dictation"), and the Model server: its URL, API key, Admin key and Claude
-fallback; see below and [Dictation heard by
+dictation"), and the Claude fallback; see below and [Dictation heard by
 qwen3-omni-30b](#dictation-heard-by-qwen3-omni-30b).
 
 ## Catching the first and last word
@@ -125,7 +126,7 @@ does a change of audio device.
 ## Dictation heard by qwen3-omni-30b
 
 A recording of up to 60 s goes first to the Model server (Settings →
-Rewording), not to the speech server: one chat request to `qwen3-omni-30b`,
+Dictation), not to the backup server: one chat request to `qwen3-omni-30b`,
 which hears the audio itself and returns the text in about 1 s. When "Send
 screenshot with dictation" is on, the screenshot goes along, so names on
 screen come out spelled right. Your known words, replacements and rewording
@@ -136,15 +137,15 @@ translate, answer or follow what you say.
 With "Clean up every dictation" on, the same request also drops fillers,
 false starts and self-corrections, so no second request is needed.
 
-Recordings longer than 60 s go to the speech server: clips up to 75 s came
+Recordings longer than 60 s go to the backup server: clips up to 75 s came
 back whole, longer ones are untested. So does every recording the model
 server fails on: unreachable, an
 error, an answer far too long for the recording (as when the model
 copies the screenshot), or one far too short (a recording of 10 s or more
 that comes back with fewer characters than seconds, as when the model misses
-most of the audio). The speech server then transcribes it as before,
+most of the audio). The backup server then transcribes it as before,
 followed by cleanup when that is on. The cost: a model server that hangs
-delays the dictation by up to 10 s before the speech server takes over. Each
+delays the dictation by up to 10 s before the backup server takes over. Each
 request's time or error is logged:
 `log stream --predicate 'subsystem == "io.github.nicolasmahn.WhisperLocal"'`. Retried unsent recordings take the same route,
 without a screenshot; "Transcribe Again" does not (see [Keeping
@@ -211,7 +212,7 @@ mid-sentence and misheard words are fixed, but your wording stays. It also
 applies to retried recordings. A dictation heard by `qwen3-omni-30b` is
 cleaned up in the same request (see [Dictation heard by
 qwen3-omni-30b](#dictation-heard-by-qwen3-omni-30b)); the rest of this section is
-about a transcript from the speech server, whose cleanup adds a few
+about a transcript from the backup server, whose cleanup adds a few
 seconds. It uses only the rewording server, never Claude, and gives up after 15 s
 (the first cleanup after launch also asks the server for its models, up to
 5 s more); if the cleanup fails, or the transcript is longer than 6000
@@ -226,7 +227,7 @@ screenshot, and spell them as they appear there; it is told never to add
 points from it. "Send screenshot with reword" and "Send screenshot with
 dictation" in Settings → Rewording, both on by default, decide this for the
 reword key and for dictation: a dictation's screenshot goes to
-`qwen3-omni-30b` with the recording, and to the cleanup when the speech server
+`qwen3-omni-30b` with the recording, and to the cleanup when the backup server
 transcribed it.
 
 The screenshot covers about 1280×800 points around the text field you are
@@ -250,8 +251,8 @@ alone.
 
 ### Models
 
-Rewording runs on a language model, not on the speech server. The
-rewording server (Model server in Settings → Rewording) is an
+Rewording runs on a language model, not on the backup server. The
+rewording server (Model server in Settings → Dictation) is an
 OpenAI-compatible `/v1` endpoint; it defaults to
 `http://localhost:8400/v1`, and the API key is optional and kept in the
 Keychain. The app asks it for its models and uses the first with "gemma" in
@@ -302,7 +303,7 @@ clipboard, same as a live dictation.
 
 Once transcribed, even to nothing, a recording moves to `Recent` and shows
 under "Recent recordings" in the menu, with "Transcribe Again and Copy" and
-"Discard". Transcribe Again goes straight to the speech server (followed by
+"Discard". Transcribe Again goes straight to the backup server (followed by
 cleanup when that is on), never to `qwen3-omni-30b`, since that model may
 be what got it wrong; it is a second opinion, and the recording stays in
 Recent.

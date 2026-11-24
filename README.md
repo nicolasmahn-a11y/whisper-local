@@ -1,26 +1,32 @@
 # whisper-local
 
 Hold a key, speak, let go, and the words appear where you are typing, like a
-local Wispr Flow. The speech is recognised by Qwen3-ASR on your own machine or
-another one on your network, not in someone else's cloud. Recordings up to
-60 s go to `qwen3-omni-30b` on your model server first; see
-[macos/README.md](macos/README.md#dictation-heard-by-qwen3-omni-30b).
+local Wispr Flow. The speech is recognised by `qwen3-omni-30b` on your own
+machine or another one on your network, not in someone else's cloud, with
+Whisper as backup.
 
 It is a native macOS menu bar app with a small pill that shows the sound level
 while you speak. Building, installing, permissions and settings are in
 [macos/README.md](macos/README.md). The app is experimental.
 
-## The speech server
+## The servers
 
-whisper-local does not run the model itself. It sends each recording longer
-than 60 s, or that `qwen3-omni-30b` fails on, to any OpenAI-compatible
+whisper-local does not run a model itself. Both servers are set in
+Settings → Dictation; leave an API key field empty for a server without a
+key.
+
+The model server is an OpenAI-compatible `/v1` endpoint serving
+`qwen3-omni-30b`. It hears every recording up to 60 s and does the
+rewording; see
+[macos/README.md](macos/README.md#dictation-heard-by-qwen3-omni-30b).
+
+The backup server takes each recording longer than 60 s, or that
+`qwen3-omni-30b` fails on. It is any OpenAI-compatible
 `/v1/audio/transcriptions` endpoint, for example vLLM:
 
     vllm serve Qwen/Qwen3-ASR-1.7B --served-model-name qwen3-asr
 
-The default server is `http://localhost:8178/v1`. To use another machine, or a
-server that wants a key, set the URL and API key in Settings. Leave the API
-key field empty for a server without a key. On the author's GPU, 15 s of
+It defaults to `http://localhost:8178/v1`. On the author's GPU, 15 s of
 speech comes back as text in about a second.
 
 ## Using it
@@ -60,7 +66,7 @@ between dictations, so a word started just before the key is caught too. See
 ## Privacy and security
 
 - Audio goes only to the server URLs you configure, and nowhere else: the
-  speech server, and the rewording server for recordings up to 60 s.
+  model server for recordings up to 60 s, and the backup server.
 - With "Keep microphone ready" on, the microphone records continuously until
   an hour after the last dictation, but only the last 0.75 s is kept, in
   memory, and it is sent only as the start of your next dictation.
